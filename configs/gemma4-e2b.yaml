@@ -1,0 +1,33 @@
+# Gemma 4 E2B — Phase 1b BF16 Smoke Inference Baseline v1
+# Primary: google/gemma-4-E2B-it-qat-q4_0-unquantized @ 6befbaca...
+model:
+  id: google/gemma-4-E2B-it-qat-q4_0-unquantized
+  revision: 6befbaca7398925921802abd1f277b495b78b738
+
+quantization:
+  method: naive
+  codebook: [-1, 0, 1]
+  group_size: 128
+  target:
+    attention: true
+    mlp: true
+
+calibration:
+  enabled: false
+
+benchmark:
+  suite: smoke
+  # deprecated alias — kept for backward compatibility, suite takes precedence
+  suites:
+    - smoke
+  thinking: false
+  generation:
+    do_sample: false
+    num_beams: 1
+    max_new_tokens: 64
+  warmup: true
+
+seed: 42
+device: auto
+dtype: bf16
+# output: runs/benchmark-smoke  # 指定時はそのpathそのまま、未指定は runs/YYYY-MM-DD_<slug>/

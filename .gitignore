@@ -1,0 +1,78 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+.eggs/
+*.whl
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# uv cache (fallback local cache, normally uses system cache)
+.uv-cache/
+uv.lock.bak
+
+# Run artifacts (reproducibility bundle per experiment)
+runs/
+artifacts/
+*.ckpt
+*.safetensors
+*.bin
+
+# Model weights (never commit)
+models/
+*.gguf
+*.onnx
+
+# Calibration / benchmark caches
+.calibration_cache/
+.benchmark_cache/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.pyright/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Secrets (never commit, even to private repo)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.secrets/
+OpenTernary-initial-docs.zip
+
+# Logs
+logs/
+*.log
+
+# Pytest / temp (sandbox artifacts)
+.tmp/
+.pytest-tmp/
+pytest-cache-files-*/
+test_cli_*/
+test_run_*/

@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "feat/**", "fix/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+
+      - name: Sync dependencies (locked)
+        run: uv sync --locked
+
+      - name: Ruff check
+        run: uv run --frozen ruff check src tests
+
+      - name: Ruff format
+        run: uv run --frozen ruff format --check src tests
+
+      - name: Mypy
+        run: uv run --frozen mypy src/openternary
+
+      - name: Pytest
+        run: uv run --frozen pytest -q
+
+  # Fallback pip check (ensure pip install still works without uv)
+  pip-fallback:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e .
+      - run: openternary --help
