@@ -26,6 +26,9 @@ ml = [
     "pillow>=12.3.0",
     "torchvision>=0.28.0",
 ]
+calibration = [
+    "datasets>=2.18",
+]
 
 [project.scripts]
 openternary = "openternary.cli.main:app"

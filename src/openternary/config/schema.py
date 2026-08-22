@@ -47,9 +47,32 @@ class QuantizationConfig(BaseModel):
 
 
 class CalibrationConfig(BaseModel):
-    """較正/再構成設定（Phase 0 では enabled=false 固定）."""
+    """較正/再構成設定（Phase 4.1 recon-scale）.
 
-    enabled: bool = False
+    v1.2 FINAL 仕様に準拠。較正は YAML 駆動（CLI オーバーライドは calibration.enabled のみ想定）。
+    window は 4.1 では per-layer のみを許可し、per-block は 4.2 で導入予定のためバリデーションエラーとする。
+    """
+
+    enabled: bool = Field(default=False, description="較正を有効化するか")
+    method: Literal["recon-scale"] = Field(default="recon-scale", description="較正手法（4.1 は recon-scale のみ）")
+    dataset: Literal["synthetic", "wiki-tiny"] = Field(
+        default="synthetic", description="較正用データセット（c4-tinyは4.2以降）"
+    )
+    num_samples: int = Field(default=32, ge=1, le=1024, description="較正サンプル数")
+    seq_len: int = Field(default=128, ge=16, le=512, description="較正サンプル系列長")
+    steps: int = Field(default=50, ge=1, description="再構成ステップ数")
+    lr: float = Field(default=1e-3, gt=0, description="学習率")
+    optimizer: Literal["adam", "sgd"] = Field(default="adam", description="オプティマイザ種別")
+    loss: Literal["mse", "l1"] = Field(default="mse", description="再構成損失種別")
+    window: Literal["per-layer"] = Field(
+        default="per-layer", description="較正ウィンドウ（4.1 は per-layer のみ、per-block は 4.2）"
+    )
+    checkpoint_interval: int = Field(default=10, ge=1, description="チェックポイント保存間隔（ステップ）")
+    allow_dataset_fallback: bool = Field(
+        default=False, description="データセット取得失敗時に synthetic へのフォールバックを許可するか"
+    )
+    held_out_ratio: float = Field(default=0.2, ge=0.05, le=0.5, description="ホールドアウト検証用比率")
+    seed: int | None = Field(default=None, description="較正専用シード（None なら AppConfig.seed を継承）")
 
 
 class GenerationConfig(BaseModel):

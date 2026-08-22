@@ -61,6 +61,39 @@ def _get_torch_dtype_map() -> dict[str, Any]:
     return _TORCH_DTYPE_MAP
 
 
+def _atomic_rename(src: pathlib.Path, dst: pathlib.Path) -> None:
+    """Windows でも PermissionError を避けるためリトライ付きで tmp->dst を rename."""
+    import time
+
+    if dst.exists():
+        shutil.rmtree(dst, ignore_errors=True)
+    # retry for antivirus / file handle delay on Windows
+    last_exc: Exception | None = None
+    for attempt in range(5):
+        try:
+            src.rename(dst)
+            return
+        except PermissionError as e:
+            last_exc = e
+            time.sleep(0.05 * (attempt + 1))
+        except OSError:
+            # fallback to shutil.move
+            try:
+                shutil.move(str(src), str(dst))
+                return
+            except Exception as e2:
+                last_exc = e2
+                time.sleep(0.05 * (attempt + 1))
+    # final attempt with shutil.move
+    try:
+        shutil.move(str(src), str(dst))
+        return
+    except Exception:
+        pass
+    if last_exc:
+        raise last_exc
+
+
 def _require_torch() -> None:
     if torch is None:
         raise ImportError("torch is required for fake-quant conversion. Install with: uv sync --extra ml")
@@ -587,9 +620,7 @@ def convert_snapshot(
             qf.write("\n")
 
         # atomic rename
-        if dst_root.exists():
-            shutil.rmtree(dst_root)
-        tmp_root.rename(dst_root)
+        _atomic_rename(tmp_root, dst_root)
 
         # file hashes for determinism check (optional)
         file_hashes: dict[str, str] = {}
@@ -610,6 +641,508 @@ def convert_snapshot(
         )
     except Exception:
         # cleanup tmp on failure
+        if tmp_root.exists():
+            shutil.rmtree(tmp_root, ignore_errors=True)
+        raise
+
+
+def _collect_safetensors_files(src_root: pathlib.Path) -> list[pathlib.Path]:
+    """src 内の全 .safetensors を収集（single/sharded 両対応、sorted）。"""
+    files = sorted(src_root.glob("*.safetensors"))
+    if not files:
+        raise FileNotFoundError(f"No .safetensors file found in {src_root}")
+    return files
+
+
+def _get_rss_mb() -> float:
+    try:
+        import psutil  # type: ignore
+
+        return float(psutil.Process().memory_info().rss) / (1024 * 1024)
+    except Exception:
+        return -1.0
+
+
+def _materialize_log(msg: str) -> None:
+    import sys
+
+    print(msg, file=sys.stderr, flush=True)
+    # also try logging if available
+    try:
+        import logging
+
+        logging.getLogger("openternary.materialize").info(msg)
+    except Exception:
+        pass
+
+
+def materialize_calibrated_snapshot(
+    src_snapshot: pathlib.Path | str,
+    dst_snapshot: pathlib.Path | str,
+    app_config: Any,
+    calibrated_state: dict[str, Any],
+    max_shard_size: int = MAX_SHARD_SIZE,
+) -> ConvertReport:
+    """Calibrated scales からの bounded sharded snapshot materialize.
+
+    Phase 4.1 real-model 用。Source を shard 単位で stream し、
+    calibrated_state に含まれる quantized target は `codes*scale` を
+    `dequantize`/`dequantize_groupwise` で再構成、非 target は source を
+    そのままコピーする。original weight shard の丸ごとコピーは行わない。
+
+    Args:
+        src_snapshot: Teacher HF snapshot dir
+        dst_snapshot: 出力先 dir（tmp 経由で atomic に作成）
+        app_config: AppConfig（scale_granularity / group_size / grouping_scheme 参照）
+        calibrated_state: {tensor_name: {codes, scales, shape, orig_dtype, group_size, grouping_scheme}}
+        max_shard_size: shard 閾値
+
+    Returns:
+        ConvertReport
+    """
+    _require_torch()
+    import gc
+
+    import safetensors.torch
+
+    src_root = pathlib.Path(src_snapshot).resolve()
+    dst_root = pathlib.Path(dst_snapshot).resolve()
+    if not src_root.exists() or not src_root.is_dir():
+        raise FileNotFoundError(f"src_snapshot not found: {src_root}")
+
+    tmp_root = dst_root.parent / (dst_root.name + ".tmp")
+    if tmp_root.exists():
+        shutil.rmtree(tmp_root)
+    tmp_root.mkdir(parents=True, exist_ok=True)
+
+    try:
+        _materialize_log(f"[materialize] copy non-weight files: {src_root} -> {tmp_root}")
+        _copy_non_weight_files(src_root, tmp_root)
+        _materialize_log(
+            f"[materialize] non-weight copy done, tmp size ~{sum(p.stat().st_size for p in tmp_root.rglob('*') if p.is_file()) / (1024**3):.3f} GB, rss={_get_rss_mb():.1f} MB"
+        )
+
+        from safetensors import safe_open
+
+        buffer: dict[str, Any] = {}
+        current_bytes = 0
+        shard_index = 1
+        weight_map: dict[str, str] = {}
+        content_entries: list[dict[str, Any]] = []
+        per_tensor_entries: list[dict[str, Any]] = []
+        tensor_payload_bytes = 0
+        total_quantizable = 0
+        total_groups = 0
+
+        scale_granularity = str(getattr(app_config.quantization, "scale_granularity", "per_tensor"))
+        group_size_cfg = int(getattr(app_config.quantization, "group_size", 128))
+        grouping_scheme_cfg = str(getattr(app_config.quantization, "grouping_scheme", "last-dim-rowwise-v1"))
+
+        from openternary.quant.grouping import GroupwiseResult, dequantize_groupwise  # noqa: WPS433
+        from openternary.quant.ternary import TernaryTensor  # noqa: WPS433
+        from openternary.quant.ternary import dequantize as dequantize_per_tensor  # noqa: WPS433
+
+        st_files = _collect_safetensors_files(src_root)
+        _materialize_log(
+            f"[materialize] source shards: {len(st_files)} files, max_shard={max_shard_size // (1024 * 1024)} MiB, scale_granularity={scale_granularity}, group_size={group_size_cfg}"
+        )
+        for _sf in st_files:
+            _materialize_log(f"[materialize] source shard: {_sf.name} size={_sf.stat().st_size / (1024**3):.3f} GB")
+        # For sharded source, process shard-by-shard to keep memory bounded and avoid reopening per tensor
+        # Collect all tensor names per shard in order, but global order is sorted for determinism
+        # We will iterate shards in sorted order, and within each shard iterate sorted keys. Then we sort buffer keys at flush time.
+        # To guarantee deterministic global order, we also collect all_names sorted but process via per-shard open.
+        all_shard_keys: list[tuple[pathlib.Path, list[str]]] = []
+        for stf in st_files:
+            with safe_open(str(stf), framework="pt", device="cpu") as f:
+                keys = sorted(f.keys())
+                all_shard_keys.append((stf, keys))
+        total_tensors = sum(len(k) for _, k in all_shard_keys)
+        _materialize_log(f"[materialize] total tensors to materialize: {total_tensors}")
+
+        # Helper to process one tensor with logging and memory hygiene
+        tensor_idx = 0
+
+        for stf, keys in all_shard_keys:
+            _materialize_log(
+                f"[materialize] opening source shard {stf.name} with {len(keys)} tensors, rss={_get_rss_mb():.1f} MB"
+            )
+            with safe_open(str(stf), framework="pt", device="cpu") as f:
+                for name in keys:
+                    tensor_idx += 1
+                    try:
+                        _materialize_log(
+                            f"[materialize] [{tensor_idx}/{total_tensors}] start name={name} shard={stf.name} buffer_bytes={current_bytes} shard_idx={shard_index} rss={_get_rss_mb():.1f} MB"
+                        )
+                        tensor = f.get_tensor(name)
+                        # Dtype/shape info before processing
+                        dtype_str_before = str(tensor.dtype)
+                        shape_before = list(tensor.shape)
+                        nbytes_before = int(tensor.numel() * tensor.element_size())
+                        _materialize_log(
+                            f"[materialize]   before dequantize: shape={shape_before} dtype={dtype_str_before} bytes={nbytes_before}"
+                        )
+                    except Exception as e:
+                        _materialize_log(f"[materialize] ERROR fetching tensor {name} from {stf}: {e}")
+                        raise
+                    # from here, wrap per-tensor processing in try to log which tensor caused crash
+                    try:
+                        dtype_map_rev = {
+                            "torch.float32": "F32",
+                            "torch.float16": "F16",
+                            "torch.bfloat16": "BF16",
+                            "torch.int8": "I8",
+                            "torch.int32": "I32",
+                            "torch.int64": "I64",
+                            "torch.uint8": "U8",
+                            "torch.bool": "BOOL",
+                        }
+                        orig_dtype_s = dtype_map_rev.get(str(tensor.dtype), str(tensor.dtype))
+                        shape = list(tensor.shape)
+                        param_count = int(tensor.numel())
+                        role, quantizable_by_adapter, exclude_reason = _classify_tensor(
+                            name, shape, orig_dtype_s, app_config
+                        )
+
+                        calibrated_entry = calibrated_state.get(name)
+                        if calibrated_entry is not None:
+                            total_quantizable += 1
+                            codes = calibrated_entry["codes"]
+                            scales = calibrated_entry["scales"]
+                            if not hasattr(scales, "numel"):
+                                scales_t = torch.tensor([float(scales)], dtype=torch.float32)
+                            else:
+                                scales_t = scales.detach().cpu().to(torch.float32).contiguous()
+                                if scales_t.dim() == 0:
+                                    scales_t = scales_t.view(1)
+                            num_groups = int(scales_t.numel())
+                            total_groups += num_groups
+                            scale_fp = _scale_fingerprint(scales_t)
+                            if num_groups > 0:
+                                s = scales_t.float()
+                                scale_min = float(s.min().item())
+                                scale_max = float(s.max().item())
+                                scale_mean = float(s.mean().item())
+                                if num_groups == 1:
+                                    scale_std = 0.0
+                                else:
+                                    scale_std = float(s.std(correction=0).item())
+                                    if math.isnan(scale_std):
+                                        scale_std = 0.0
+                            else:
+                                scale_min = scale_max = scale_mean = scale_std = 0.0
+
+                            if scale_granularity == "per_tensor":
+                                scale_val = float(scales_t[0].item()) if num_groups else 0.0
+                                tt = TernaryTensor(
+                                    codes=codes.detach().cpu().to(torch.int8),
+                                    scale=scale_val,
+                                    shape=tuple(codes.shape),
+                                    orig_dtype=str(tensor.dtype),
+                                )
+                                _materialize_log(f"[materialize]   dequant per_tensor scale={scale_val:.6f}")
+                                recon = dequantize_per_tensor(tt)
+                                # free tt.codes reference early for giant tensors
+                                del tt
+                                recon_cast = recon.to(tensor.dtype)
+                                # free recon (float32) if not needed after cast
+                                del recon
+                                gc.collect()
+                                out_tensor = recon_cast
+                                del recon_cast
+                                zero_ratio = float((codes == 0).sum().item() / codes.numel()) if codes.numel() else 0.0
+                                try:
+                                    # Use float32 tensor without extra copy: recon already freed, compute mae via out_tensor
+                                    mae = float(
+                                        (tensor.to(torch.float32) - out_tensor.to(torch.float32)).abs().mean().item()
+                                    )
+                                except Exception:
+                                    mae = 0.0
+                            else:
+                                g_size = int(calibrated_entry.get("group_size", group_size_cfg))
+                                g_scheme = str(calibrated_entry.get("grouping_scheme", grouping_scheme_cfg))
+                                res = GroupwiseResult(
+                                    codes=codes.detach().cpu().to(torch.int8),
+                                    scales=scales_t,
+                                    shape=tuple(shape),
+                                    orig_dtype=str(tensor.dtype),
+                                    group_size=g_size,
+                                    grouping_scheme=g_scheme,
+                                )
+                                _materialize_log(
+                                    f"[materialize]   dequant per_group groups={num_groups} g_size={g_size}"
+                                )
+                                recon = dequantize_groupwise(res)
+                                del res
+                                recon_cast = recon.to(tensor.dtype)
+                                del recon
+                                gc.collect()
+                                out_tensor = recon_cast
+                                del recon_cast
+                                zero_ratio = float((codes == 0).sum().item() / codes.numel()) if codes.numel() else 0.0
+                                try:
+                                    mae = float(
+                                        (tensor.to(torch.float32) - out_tensor.to(torch.float32)).abs().mean().item()
+                                    )
+                                except Exception:
+                                    mae = 0.0
+                            # Free calibrated tensors refs early
+                            del scales_t
+                            _materialize_log(
+                                f"[materialize]   after dequantize: out shape={list(out_tensor.shape)} dtype={out_tensor.dtype} rss={_get_rss_mb():.1f} MB"
+                            )
+                            entry: dict[str, Any] = {
+                                "name": name,
+                                "shape": shape,
+                                "dtype": str(out_tensor.dtype),
+                                "param_count": param_count,
+                                "quantizable": True,
+                                "role": role,
+                                "exclude_reason": None,
+                                "scale_granularity": scale_granularity,
+                                "grouping_scheme": grouping_scheme_cfg
+                                if scale_granularity == "per_group"
+                                else "last-dim-rowwise-v1",
+                                "group_size": group_size_cfg if scale_granularity == "per_group" else 128,
+                                "num_groups": num_groups,
+                                "scale_fingerprint": scale_fp,
+                                "scale_stats": {
+                                    "min": scale_min,
+                                    "max": scale_max,
+                                    "mean": scale_mean,
+                                    "std": scale_std,
+                                },
+                                "zero_ratio": zero_ratio,
+                                "mae": mae,
+                            }
+                            # free codes ref after use (calibrated_state still holds original, but local codes var freed)
+                            del codes
+                            del scales
+                        else:
+                            out_tensor = tensor
+                            entry = {
+                                "name": name,
+                                "shape": shape,
+                                "dtype": str(out_tensor.dtype),
+                                "param_count": param_count,
+                                "quantizable": False,
+                                "role": role,
+                                "exclude_reason": exclude_reason,
+                                "scale_granularity": "per_tensor",
+                                "grouping_scheme": "last-dim-rowwise-v1",
+                                "group_size": 128,
+                                "num_groups": 0,
+                                "scale_fingerprint": "",
+                                "scale_stats": {"min": 0, "max": 0, "mean": 0, "std": 0},
+                                "zero_ratio": 0.0,
+                                "mae": 0.0,
+                            }
+                    except Exception as exc:
+                        _materialize_log(f"[materialize] ERROR processing tensor {name} shape={shape} : {exc}")
+                        raise
+
+                    # ---- content hash with memory hygiene ----
+                    try:
+                        # For giant tensors, hash without holding extra duplicate: compute and immediately free bytes
+                        # _tensor_raw_sha256 internally does view->numpy->tobytes which copies 800MB for embed; we keep but log and free quickly
+                        _materialize_log(f"[materialize]   hashing tensor {name} ...")
+                        sha = _tensor_raw_sha256(out_tensor)
+                        _materialize_log(f"[materialize]   hash done {sha[:12]}...")
+                    except Exception as exc2:
+                        _materialize_log(f"[materialize] ERROR hashing {name}: {exc2}")
+                        raise
+
+                    per_tensor_entries.append(entry)
+                    nbytes = int(out_tensor.numel() * out_tensor.element_size())
+                    tensor_payload_bytes += nbytes
+                    content_entries.append(
+                        {"name": name, "dtype": str(out_tensor.dtype), "shape": shape, "sha256": sha}
+                    )
+                    _materialize_log(
+                        f"[materialize]   buffer before add: current={current_bytes} + nbytes={nbytes} -> {current_bytes + nbytes} / max {max_shard_size} rss={_get_rss_mb():.1f} MB"
+                    )
+
+                    if buffer and current_bytes + nbytes > max_shard_size:
+                        shard_name = f"model-{shard_index:05d}-of-99999.safetensors"
+                        shard_path = tmp_root / shard_name
+                        ordered = {k: buffer[k] for k in sorted(buffer.keys())}
+                        _materialize_log(
+                            f"[materialize]   flushing shard {shard_name} with {len(ordered)} tensors, bytes={current_bytes} rss={_get_rss_mb():.1f} MB"
+                        )
+                        safetensors.torch.save_file(ordered, str(shard_path))
+                        _materialize_log(f"[materialize]   flushed {shard_path} size={shard_path.stat().st_size} bytes")
+                        for k in ordered:
+                            weight_map[k] = shard_name
+                        # free buffer tensors explicitly
+                        for _k in list(buffer.keys()):
+                            del buffer[_k]
+                        buffer.clear()
+                        gc.collect()
+                        current_bytes = 0
+                        shard_index += 1
+                        _materialize_log(f"[materialize]   after flush rss={_get_rss_mb():.1f} MB")
+                    buffer[name] = out_tensor
+                    current_bytes += nbytes
+                    # Free original tensor reference if different from out_tensor, to avoid duplicate for non-target
+                    if tensor is not out_tensor:
+                        del tensor
+                    # out_tensor now owned by buffer, will be freed on flush
+                    _materialize_log(
+                        f"[materialize] [{tensor_idx}/{total_tensors}] done name={name} buffer={current_bytes} rss={_get_rss_mb():.1f} MB"
+                    )
+                    # Periodic gc for giant tensors
+                    if nbytes > 100 * 1024 * 1024:
+                        gc.collect()
+
+                # end for name in keys
+            _materialize_log(f"[materialize] finished shard {stf.name}")
+
+        _materialize_log(
+            f"[materialize] all tensors processed, flushing remaining buffer {len(buffer)} tensors, bytes={current_bytes}"
+        )
+
+        # flush remaining
+        if buffer:
+            shard_name = f"model-{shard_index:05d}-of-99999.safetensors"
+            shard_path = tmp_root / shard_name
+            ordered = {k: buffer[k] for k in sorted(buffer.keys())}
+            safetensors.torch.save_file(ordered, str(shard_path))
+            for k in ordered:
+                weight_map[k] = shard_name
+            buffer.clear()
+            current_bytes = 0
+        else:
+            shard_index -= 1
+        shard_count = shard_index if shard_index >= 1 else 0
+
+        if shard_count > 0:
+            for i in range(1, shard_count + 1):
+                old = tmp_root / f"model-{i:05d}-of-99999.safetensors"
+                new = tmp_root / f"model-{i:05d}-of-{shard_count:05d}.safetensors"
+                old.rename(new)
+                old_name = f"model-{i:05d}-of-99999.safetensors"
+                new_name = f"model-{i:05d}-of-{shard_count:05d}.safetensors"
+                for k, v in list(weight_map.items()):
+                    if v == old_name:
+                        weight_map[k] = new_name
+
+        total_size = tensor_payload_bytes
+        index_obj = {
+            "metadata": {"total_size": total_size},
+            "weight_map": {k: weight_map[k] for k in sorted(weight_map.keys())},
+        }
+        with open(tmp_root / "model.safetensors.index.json", "w", encoding="utf-8") as idx_f:
+            json.dump(index_obj, idx_f, indent=2, sort_keys=True, ensure_ascii=False)
+            idx_f.write("\n")
+
+        content_fp = _content_fingerprint(content_entries)
+        shard_file_bytes = 0
+        for i in range(1, shard_count + 1):
+            p = tmp_root / f"model-{i:05d}-of-{shard_count:05d}.safetensors"
+            shard_file_bytes += p.stat().st_size
+        snapshot_total_bytes = 0
+        for p in tmp_root.rglob("*"):
+            if p.is_file():
+                snapshot_total_bytes += p.stat().st_size
+
+        from openternary.quant.accounting import estimate_whole_model
+
+        classified = []
+        for ent in per_tensor_entries:
+            dtype_str = ent["dtype"]
+            header_map = {
+                "torch.bfloat16": "BF16",
+                "torch.float32": "F32",
+                "torch.float16": "F16",
+                "torch.float64": "F64",
+                "torch.int8": "I8",
+            }
+            header_dtype = header_map.get(dtype_str, "BF16")
+            classified.append(
+                {
+                    "name": ent["name"],
+                    "param_count": ent["param_count"],
+                    "dtype": header_dtype,
+                    "quantizable": ent["quantizable"],
+                }
+            )
+
+        try:
+            est = estimate_whole_model(classified, scale_dtype="fp32")  # type: ignore[arg-type]
+            if scale_granularity == "per_group":
+                grouped_overhead = total_groups * 32
+                # keep per_tensor for reference
+                est["scale_overhead_bits"] = sum(1 for e in per_tensor_entries if e["quantizable"]) * 32
+                est["grouped_scale_overhead_bits"] = grouped_overhead
+                est["num_scales"] = total_groups
+                est["num_quantizable_tensors"] = sum(1 for e in per_tensor_entries if e["quantizable"])
+        except Exception:
+            total_params = sum(e["param_count"] for e in per_tensor_entries if e["quantizable"])
+            from openternary.quant.accounting import LOG2_3, packed_weight_bits_for_n
+
+            ideal = int(total_params * LOG2_3)
+            packed = sum(packed_weight_bits_for_n(e["param_count"]) for e in per_tensor_entries if e["quantizable"])
+            logical = sum(e["param_count"] * 2 for e in per_tensor_entries if e["quantizable"])
+            per_tensor_overhead = sum(1 for e in per_tensor_entries if e["quantizable"]) * 32
+            grouped_overhead = total_groups * 32 if scale_granularity == "per_group" else per_tensor_overhead
+            est = {
+                "ideal_ternary_bits": ideal,
+                "packed_weight_bits": packed,
+                "logical_2bit_bits": logical,
+                "scale_overhead_bits": per_tensor_overhead,
+                "grouped_scale_overhead_bits": grouped_overhead,
+                "num_scales": total_groups
+                if scale_granularity == "per_group"
+                else sum(1 for e in per_tensor_entries if e["quantizable"]),
+            }
+
+        quantization_json: dict[str, Any] = {
+            "version": 1,
+            "method": "naive-calibrated",
+            "codebook": [-1, 0, 1],
+            "scale_granularity": scale_granularity,
+            "grouping_scheme": grouping_scheme_cfg,
+            "group_size": group_size_cfg,
+            "source_snapshot": str(src_root),
+            "num_tensors": len(per_tensor_entries),
+            "num_quantizable_tensors": sum(1 for e in per_tensor_entries if e["quantizable"]),
+            "total_groups": total_groups,
+            "content_fingerprint": content_fp,
+            "packed_estimate": est,
+            "packed_artifact_actual_bytes": None,
+            "fake_quant_artifact": {
+                "tensor_payload_bytes": tensor_payload_bytes,
+                "shard_file_bytes": shard_file_bytes,
+                "snapshot_total_bytes": snapshot_total_bytes,
+                "shard_count": shard_count,
+                "shard_size": f"{max_shard_size // (1024 * 1024)} MiB",
+            },
+            "per_tensor": per_tensor_entries,
+        }
+
+        with open(tmp_root / "quantization.json", "w", encoding="utf-8") as qf:
+            json.dump(quantization_json, qf, indent=2, sort_keys=True, ensure_ascii=False)
+            qf.write("\n")
+
+        _atomic_rename(tmp_root, dst_root)
+
+        file_hashes: dict[str, str] = {}
+        for i in range(1, shard_count + 1):
+            p = dst_root / f"model-{i:05d}-of-{shard_count:05d}.safetensors"
+            h = _sha256_hex(p.read_bytes())
+            file_hashes[p.name] = f"sha256:{h}"
+
+        return ConvertReport(
+            dst_snapshot=dst_root,
+            quantization_json=quantization_json,
+            content_fingerprint=content_fp,
+            file_hashes=file_hashes,
+            shard_count=shard_count,
+            tensor_payload_bytes=tensor_payload_bytes,
+            shard_file_bytes=shard_file_bytes,
+            snapshot_total_bytes=snapshot_total_bytes,
+        )
+    except Exception:
         if tmp_root.exists():
             shutil.rmtree(tmp_root, ignore_errors=True)
         raise

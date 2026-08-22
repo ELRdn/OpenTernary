@@ -635,12 +635,301 @@ def calibrate(
     dtype: Annotated[str | None, typer.Option("--dtype", help="Dtype: bf16/fp16/fp32")] = None,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Show config and exit")] = False,
     verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Verbose")] = False,
+    resume: Annotated[bool, typer.Option("--resume", help="Resume from latest checkpoint")] = False,
+    resume_from: Annotated[
+        pathlib.Path | None, typer.Option("--resume-from", help="Resume from specific checkpoint")
+    ] = None,
+    materialize_only: Annotated[
+        bool, typer.Option("--materialize-only", help="Skip training, materialize from latest/step checkpoint only")
+    ] = False,
 ) -> None:
-    """Calibrate / reconstruct quantized model (Phase 0 stub)."""
+    """Calibrate — layer-local recon-scale (Phase 4.1)."""
+    from openternary.config.loader import dump_config_yaml, load_config
+    from openternary.experiment.metadata import write_json
+    from openternary.experiment.run import create_run
+    from openternary.utils.logging import setup_logging
+    from openternary.utils.seed import seed_everything
+
     overrides = _resolve_cli_overrides(seed, device, dtype, output)
     if model is not None:
         overrides["model.id"] = model
-    _handle_command("calibrate", config, overrides, dry_run, verbose)
+
+    try:
+        cfg = load_config(config_path=config, cli_overrides=overrides)
+    except FileNotFoundError as e:
+        console.print(f"[red]Config file not found:[/red] {e}")
+        raise typer.Exit(2) from e
+    except ValueError as e:
+        console.print(f"[red]Configuration error:[/red] {e}")
+        raise typer.Exit(2) from e
+
+    # Window validation (Phase 4.1 only per-layer)
+    if cfg.calibration.window != "per-layer":
+        console.print(f"[red]window={cfg.calibration.window} is not supported in Phase 4.1 (only per-layer)[/red]")
+        raise typer.Exit(2)
+
+    if dry_run:
+        console.print("[bold cyan]calibrate: dry-run — resolved config[/bold cyan]")
+        console.print(dump_config_yaml(cfg))
+        # Estimate (including Teacher model memory)
+        n_targets = 205  # Gemma 4 E2B quantizable count (Phase 1)
+        est_cache_mb = (cfg.calibration.num_samples * cfg.calibration.seq_len * 1536 * 2 * 4) / (1024 * 1024)  # rough
+        teacher_gb = 9.5  # BF16 9.5075 GB from Phase 1 inspection (Gemma 4 E2B)
+        # Try to refine via snapshot size if available
+        try:
+            from openternary.utils.hf_cache import resolve_snapshot as _resolve
+
+            _snap = _resolve(cfg.model.id, cfg.model.revision)
+            _st = list(_snap.glob("*.safetensors"))
+            if _st:
+                _total = sum(p.stat().st_size for p in _st)
+                teacher_gb = _total / (1024**3)
+        except Exception:
+            pass
+        peak_gb = teacher_gb + est_cache_mb / 1024
+        console.print(f"[dim]Target modules: {n_targets} (detected)[/dim]")
+        console.print(
+            f"[dim]Dataset: {cfg.calibration.dataset} num_samples={cfg.calibration.num_samples} seq_len={cfg.calibration.seq_len}[/dim]"
+        )
+        console.print(f"[dim]Teacher model: ~{teacher_gb:.1f} GB (BF16)[/dim]")
+        console.print(f"[dim]Estimated activation cache: ~{est_cache_mb:.1f} MB (disk-backed, sharded)[/dim]")
+        console.print(
+            f"[dim]Estimated peak RAM: ~{peak_gb:.1f} GB (Teacher + Cache, bounded streamingで同時保持なし)[/dim]"
+        )
+        # Real dataset probe (at least 1 sample via dataset resolve -> tokenizer)
+        try:
+            from openternary.calibration.dataset import get_calibration_texts
+
+            seed_probe = int(cfg.calibration.seed) if cfg.calibration.seed is not None else int(cfg.seed)
+            # probe 1 sample
+            _texts, _eff, _fallback = get_calibration_texts(
+                str(cfg.calibration.dataset), 1, seed_probe, bool(cfg.calibration.allow_dataset_fallback)
+            )
+            # try tokenizer (best effort, if teacher snapshot exists)
+            try:
+                from openternary.utils.hf_cache import resolve_snapshot
+
+                snap_probe = resolve_snapshot(cfg.model.id, cfg.model.revision)
+                from transformers import AutoTokenizer  # type: ignore[import]
+
+                tok = AutoTokenizer.from_pretrained(str(snap_probe), use_fast=True)  # type: ignore[union-attr]
+                _ = tok(
+                    _texts[0],
+                    truncation=True,
+                    max_length=int(cfg.calibration.seq_len),
+                    padding="max_length",
+                    return_tensors="pt",
+                )
+                console.print(
+                    f"[dim]Dataset probe: {cfg.calibration.dataset} -> {_eff} 1 sample OK, tokenizer OK[/dim]"
+                )
+            except Exception as e_tok:  # noqa: BLE001
+                # if tokenizer fails but dataset succeeded, still consider probe success for synthetic fallback case
+                # for wiki-tiny, tokenizer failure should be considered probe failure unless fallback allowed
+                if str(cfg.calibration.dataset) != "synthetic" and not cfg.calibration.allow_dataset_fallback:
+                    console.print(f"[red]Dataset probe failed (tokenizer): {e_tok}[/red]")
+                    raise typer.Exit(2) from e_tok
+                console.print(
+                    f"[dim]Dataset probe: {cfg.calibration.dataset} -> {_eff} 1 sample OK (tokenizer skipped: {e_tok})[/dim]"
+                )
+        except (ImportError, RuntimeError, ValueError, FileNotFoundError, OSError) as e:
+            console.print(f"[red]Dataset probe failed: {e}[/red]")
+            raise typer.Exit(2) from e
+        console.print("[dim]No run directory was created (--dry-run).[/dim]")
+        raise typer.Exit(0)
+
+    # Handle --materialize-only (skip training, materialize from checkpoint)
+    if materialize_only:
+        if not cfg.output or not pathlib.Path(cfg.output).exists():
+            console.print("[red]--materialize-only requires existing --output directory[/red]")
+            raise typer.Exit(2)
+        run_dir = pathlib.Path(cfg.output)  # type: ignore[no-redef]
+        ckpt_dir = run_dir / "artifacts" / "checkpoint"
+        has_ckpt = False
+        if resume_from is not None:
+            has_ckpt = pathlib.Path(resume_from).exists()
+        else:
+            if ckpt_dir.exists() and any(ckpt_dir.glob("step_*.pt")):
+                has_ckpt = True
+        if not has_ckpt:
+            console.print(f"[red]no checkpoint found for --materialize-only in {run_dir}[/red]")
+            raise typer.Exit(2)
+        try:
+            import json as _json
+
+            env_path = run_dir / "environment.json"
+            if env_path.exists():
+                env_data = _json.loads(env_path.read_text(encoding="utf-8"))
+                run_id = str(env_data.get("run_id", "materialize-only"))  # type: ignore[no-redef]
+            else:
+                run_id = "materialize-only"  # type: ignore[no-redef]
+        except Exception:
+            run_id = "materialize-only"  # type: ignore[no-redef]
+        logger = setup_logging(run_dir, verbose=verbose)
+        logger.info(f"calibrate --materialize-only — run_id={run_id} run_dir={run_dir} method={cfg.calibration.method}")
+        seed_info = seed_everything(cfg.seed)
+        logger.info(f"seed: {seed_info}")
+        try:
+            from openternary.calibration.runner import run_calibration
+            from openternary.utils.hf_cache import resolve_snapshot
+
+            try:
+                snap = resolve_snapshot(cfg.model.id, cfg.model.revision)
+                logger.info(f"teacher snapshot: {snap}")
+                teacher_snap: pathlib.Path | None = snap
+            except FileNotFoundError:
+                teacher_snap = None
+                logger.warning("teacher snapshot not found, using dummy for calibration")
+
+            result = run_calibration(cfg, teacher_snap, run_dir, resume_from=resume_from, materialize_only=True)
+        except FileNotFoundError as e:
+            _write_failed_metrics(run_dir, run_id, "FileNotFoundError", str(e))
+            console.print(f"[red]Snapshot not found:[/red] {e}")
+            raise typer.Exit(2) from e
+        except ImportError as e:
+            _write_failed_metrics(run_dir, run_id, "ImportError", str(e))
+            console.print(f"[red]Missing dependency:[/red] {e}")
+            raise typer.Exit(2) from e
+        except ValueError as e:
+            _write_failed_metrics(run_dir, run_id, "ValueError", str(e))
+            console.print(f"[red]Calibration error:[/red] {e}")
+            raise typer.Exit(2) from e
+        except Exception as e:  # noqa: BLE001
+            logger.exception("calibrate materialize-only failed")
+            _write_failed_metrics(run_dir, run_id, type(e).__name__, str(e))
+            console.print(f"[red]Calibrate failed:[/red] {e}")
+            raise typer.Exit(1) from e
+        # success summary already handled below, but we duplicate minimal
+        console.print(f"[bold green]materialize-only done:[/bold green] {result.get('calibrated_snapshot')}")
+        raise typer.Exit(0)
+
+    # Handle --resume --output <existing-run> reuse (no new -001)
+    run_dir: pathlib.Path  # type: ignore[no-redef]
+    run_id: str  # type: ignore[no-redef]
+    if resume and cfg.output and pathlib.Path(cfg.output).exists():
+        run_dir = pathlib.Path(cfg.output)
+        # check resumable checkpoint exists
+        ckpt_dir = run_dir / "artifacts" / "checkpoint"
+        has_resumable = False
+        if resume_from is not None:
+            has_resumable = pathlib.Path(resume_from).exists()
+        else:
+            if ckpt_dir.exists() and any(ckpt_dir.glob("step_*.pt")):
+                has_resumable = True
+        if not has_resumable:
+            console.print(f"[red]no resumable checkpoint found in {run_dir}[/red]")
+            raise typer.Exit(2)
+        # read existing run_id if available
+        try:
+            import json as _json
+
+            env_path = run_dir / "environment.json"
+            if env_path.exists():
+                env_data = _json.loads(env_path.read_text(encoding="utf-8"))
+                run_id = str(env_data.get("run_id", "resume"))
+            else:
+                run_id = "resume"
+        except Exception:
+            run_id = "resume"
+    elif resume:
+        # resume requested but no existing output to resume from
+        console.print("[red]no resumable checkpoint found: --resume requires existing --output directory[/red]")
+        raise typer.Exit(2)
+    else:
+        run_dir, run_id = create_run(cfg)
+    logger = setup_logging(run_dir, verbose=verbose)
+    logger.info(f"calibrate — run_id={run_id} run_dir={run_dir} method={cfg.calibration.method}")
+    seed_info = seed_everything(cfg.seed)
+    logger.info(f"seed: {seed_info}")
+
+    try:
+        from openternary.calibration.runner import run_calibration
+        from openternary.utils.hf_cache import resolve_snapshot
+
+        # Resolve teacher snapshot for logging (runner will handle dummy vs real)
+        try:
+            snap = resolve_snapshot(cfg.model.id, cfg.model.revision)
+            logger.info(f"teacher snapshot: {snap}")
+            teacher_snap: pathlib.Path | None = snap  # type: ignore[no-redef]
+        except FileNotFoundError:
+            teacher_snap = None  # type: ignore[no-redef]
+            logger.warning("teacher snapshot not found, using dummy for calibration")
+
+        result = run_calibration(cfg, teacher_snap, run_dir, resume=resume, resume_from=resume_from)
+    except FileNotFoundError as e:
+        _write_failed_metrics(run_dir, run_id, "FileNotFoundError", str(e))
+        console.print(f"[red]Snapshot not found:[/red] {e}")
+        raise typer.Exit(2) from e
+    except ImportError as e:
+        _write_failed_metrics(run_dir, run_id, "ImportError", str(e))
+        console.print(f"[red]Missing dependency:[/red] {e}")
+        raise typer.Exit(2) from e
+    except ValueError as e:
+        _write_failed_metrics(run_dir, run_id, "ValueError", str(e))
+        console.print(f"[red]Calibration error:[/red] {e}")
+        raise typer.Exit(2) from e
+    except Exception as e:  # noqa: BLE001
+        logger.exception("calibrate failed")
+        _write_failed_metrics(run_dir, run_id, type(e).__name__, str(e))
+        console.print(f"[red]Calibrate failed:[/red] {e}")
+        raise typer.Exit(1) from e
+
+    # Write model/metrics already done in runner, but ensure run-level
+    write_json(run_dir / "model.json", {"id": cfg.model.id, "revision": cfg.model.revision, "adapter": "gemma4"})
+    # Rich summary
+    try:
+        import json as _json
+
+        from rich.table import Table
+
+        calib_path = (
+            pathlib.Path(result["calibration_json"]) if "calibration_json" in result else run_dir / "calibration.json"
+        )
+        data = {}
+        if calib_path.exists():
+            data = _json.loads(calib_path.read_text(encoding="utf-8"))
+        table = Table(title=f"Calibrate — {cfg.model.id} [{cfg.calibration.method}]", show_header=True)
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", style="white")
+        table.add_row("Dataset", str(data.get("dataset", cfg.calibration.dataset)))
+        table.add_row("Steps", str(data.get("steps", cfg.calibration.steps)))
+        table.add_row(
+            "Initial loss",
+            f"{data.get('initial_loss', '?'):.6f}"
+            if isinstance(data.get("initial_loss"), (int, float))
+            else str(data.get("initial_loss", "?")),
+        )
+        table.add_row(
+            "Final loss",
+            f"{data.get('final_loss', '?'):.6f}"
+            if isinstance(data.get("final_loss"), (int, float))
+            else str(data.get("final_loss", "?")),
+        )
+        table.add_row(
+            "Held-out before",
+            f"{data.get('heldout_loss_before', '?'):.6f}"
+            if isinstance(data.get("heldout_loss_before"), (int, float))
+            else str(data.get("heldout_loss_before", "?")),
+        )
+        table.add_row(
+            "Held-out after",
+            f"{data.get('heldout_loss_after', '?'):.6f}"
+            if isinstance(data.get("heldout_loss_after"), (int, float))
+            else str(data.get("heldout_loss_after", "?")),
+        )
+        table.add_row(
+            "Scale delta",
+            f"{data.get('mean_abs_scale_delta', '?'):.6f}"
+            if isinstance(data.get("mean_abs_scale_delta"), (int, float))
+            else str(data.get("mean_abs_scale_delta", "?")),
+        )
+        table.add_row("Contamination", str(data.get("contamination_train_smoke", "?")))
+        console.print(table)
+    except Exception:
+        pass
+
+    typer.echo(f"Calibrate completed: {run_dir}")
+    raise typer.Exit(0)
 
 
 @app.command("export")

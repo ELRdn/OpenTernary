@@ -1,0 +1,54 @@
+# Gemma 4 E2B — Phase 4.1 Real-model Calibration Acceptance
+# G128 recon-scale / wiki-tiny
+# Primary: google/gemma-4-E2B-it-qat-q4_0-unquantized @ 6befbaca...
+
+model:
+  id: google/gemma-4-E2B-it-qat-q4_0-unquantized
+  revision: 6befbaca7398925921802abd1f277b495b78b738
+
+quantization:
+  method: naive
+  codebook: [-1, 0, 1]
+  group_size: 128
+  scale_granularity: per_group
+  grouping_scheme: last-dim-rowwise-v1
+  target:
+    attention: true
+    mlp: true
+
+calibration:
+  enabled: true
+  method: recon-scale
+  dataset: wiki-tiny
+  num_samples: 32
+  seq_len: 128
+  steps: 50
+  lr: 0.001
+  optimizer: adam
+  loss: mse
+  window: per-layer
+  checkpoint_interval: 10
+  allow_dataset_fallback: false
+  seed: 42
+  held_out_ratio: 0.2
+
+benchmark:
+  suite: smoke
+
+  # deprecated alias — kept for backward compatibility,
+  # suite takes precedence
+  suites:
+    - smoke
+
+  thinking: false
+
+  generation:
+    do_sample: false
+    num_beams: 1
+    max_new_tokens: 64
+
+  warmup: true
+
+seed: 42
+device: cpu
+dtype: bf16
