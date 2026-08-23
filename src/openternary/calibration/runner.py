@@ -141,7 +141,21 @@ def _run_materialize_only(
     # Need target module names — infer from checkpoint per_module keys or from teacher model structure
     # Try to get keys from ckpt
     per_module_keys: list[str] = []
-    if isinstance(ckpt, dict) and ckpt.get("schema_version") == 2 and "completed_module_params" in ckpt:
+    if isinstance(ckpt, dict) and ckpt.get("schema_version") == 2 and "completed_manifest" in ckpt:
+        # P0 manifest based checkpoint
+        per_module_keys = [e.get("module") for e in ckpt.get("completed_manifest", []) if e.get("module")]
+        # include current cursor module if present and not yet in manifest
+        mc = ckpt.get("module_cursor")
+        if isinstance(mc, dict) and mc.get("module_name"):
+            mn = mc.get("module_name")
+            if mn and mn not in per_module_keys:
+                per_module_keys.append(mn)
+        # also include raw_params keys (mid-module current)
+        if "raw_params" in ckpt and isinstance(ckpt["raw_params"], dict):
+            for k in ckpt["raw_params"]:
+                if k not in per_module_keys:
+                    per_module_keys.append(k)
+    elif isinstance(ckpt, dict) and ckpt.get("schema_version") == 2 and "completed_module_params" in ckpt:
         per_module_keys = list(ckpt["completed_module_params"].keys())
         # include current cursor module if present
         mc = ckpt.get("module_cursor")
@@ -239,9 +253,28 @@ def _run_materialize_only(
             codes = res.codes
         zero_mask = orig_scales == 0
         raw_param, zero_mask_t = build_scale_params(orig_scales, zero_mask)
-        # Override raw_param from checkpoint if available (v2 and legacy)
+        # Override raw_param from checkpoint if available (v2 manifest or legacy)
         ckpt_raw = None
-        if isinstance(ckpt, dict) and ckpt.get("schema_version") == 2 and "completed_module_params" in ckpt:
+        if isinstance(ckpt, dict) and ckpt.get("schema_version") == 2 and "completed_manifest" in ckpt:
+            # P0: load from calibration_state file
+            for entry in ckpt.get("completed_manifest", []):
+                if entry.get("module") == mname:
+                    rel = entry.get("file", "")
+                    fpath = out / rel if rel else None
+                    if fpath and fpath.exists():
+                        try:
+                            payload = torch.load(str(fpath), map_location="cpu")
+                            ckpt_raw = payload.get("raw_param")
+                        except Exception as e:
+                            print(f"[materialize-only] warning: failed to load manifest {fpath}: {e}", flush=True)
+                    break
+            # also check current cursor if this is active module
+            mc2 = ckpt.get("module_cursor")
+            if mc2 and mc2.get("module_name") == mname and "current_raw_param" in ckpt:
+                ckpt_raw = ckpt.get("current_raw_param")
+            if ckpt_raw is None and "raw_params" in ckpt and mname in ckpt["raw_params"]:
+                ckpt_raw = ckpt["raw_params"][mname]
+        elif isinstance(ckpt, dict) and ckpt.get("schema_version") == 2 and "completed_module_params" in ckpt:
             if mname in ckpt["completed_module_params"]:
                 entry = ckpt["completed_module_params"][mname]
                 if isinstance(entry, dict):
@@ -277,9 +310,31 @@ def _run_materialize_only(
             raw_thr, thr_zero_mask = build_threshold_params(
                 n_thr, init_ratio=0.5, eps=threshold_eps, device=orig_scales.device, zero_mask=zero_mask
             )
-            # override from checkpoint (v2 aware)
+            # override from checkpoint (v2 manifest or legacy)
             ckpt_thr = None
-            if (
+            if isinstance(ckpt, dict) and ckpt.get("schema_version") == 2 and "completed_manifest" in ckpt:
+                for entry in ckpt.get("completed_manifest", []):
+                    if entry.get("module") == mname:
+                        rel = entry.get("file", "")
+                        fpath = out / rel if rel else None
+                        if fpath and fpath.exists():
+                            try:
+                                payload = torch.load(str(fpath), map_location="cpu")
+                                ckpt_thr = payload.get("raw_threshold")
+                            except Exception as e:
+                                print(f"[materialize-only] warning: manifest thr load failed {fpath}: {e}", flush=True)
+                        break
+                mc_thr = ckpt.get("module_cursor")
+                if mc_thr and mc_thr.get("module_name") == mname and "current_raw_threshold" in ckpt:
+                    ckpt_thr = ckpt.get("current_raw_threshold")
+                if (
+                    ckpt_thr is None
+                    and isinstance(ckpt, dict)
+                    and "raw_thresholds" in ckpt
+                    and mname in ckpt["raw_thresholds"]
+                ):
+                    ckpt_thr = ckpt["raw_thresholds"][mname]
+            elif (
                 isinstance(ckpt, dict)
                 and ckpt.get("schema_version") == 2
                 and "completed_module_params" in ckpt
@@ -963,7 +1018,35 @@ def run_calibration(
             # method check (warn if mismatch)
             # schema v2 expected
             if _resume_ckpt.get("schema_version") == 2:
-                completed_module_params = dict(_resume_ckpt.get("completed_module_params", {}))
+                # P0: manifest based — completed modules stored as immutable files, not in checkpoint
+                completed_module_params = {}
+                manifest = _resume_ckpt.get("completed_manifest", [])
+                if manifest:
+                    for entry in manifest:
+                        mname = entry.get("module")
+                        rel = entry.get("file", "")
+                        if not mname or not rel:
+                            continue
+                        # resolve file relative to output dir
+                        fpath = out / rel
+                        if not fpath.exists():
+                            # fallback to out/artifacts/calibration_state
+                            sanitized = mname.replace(".", "_").replace("/", "_")
+                            fpath = out / "artifacts" / "calibration_state" / f"{sanitized}.pt"
+                        if fpath.exists():
+                            try:
+                                payload = torch.load(str(fpath), map_location="cpu")
+                                completed_module_params[mname] = {
+                                    "raw_param": payload.get("raw_param"),
+                                    "raw_threshold": payload.get("raw_threshold"),
+                                }
+                            except Exception as e:
+                                print(f"[resume] warning: failed to load {fpath}: {e}", flush=True)
+                        else:
+                            print(f"[resume] warning: manifest file missing {fpath}", flush=True)
+                else:
+                    # legacy aggregated checkpoint (pre-P0)
+                    completed_module_params = dict(_resume_ckpt.get("completed_module_params", {}))
                 mc = _resume_ckpt.get("module_cursor", {})
                 start_module_idx = int(mc.get("module_idx", 0))
                 start_step_in_module = int(mc.get("step", 0))
@@ -981,6 +1064,13 @@ def run_calibration(
                     f"[resume] v2 checkpoint {_ckpt_path} cursor module_idx={start_module_idx} step={start_step_in_module} completed={len(completed_module_params)}",
                     flush=True,
                 )
+                # restore RNG if present
+                try:
+                    rng_state = _resume_ckpt.get("rng_state")
+                    if rng_state is not None:
+                        torch.set_rng_state(rng_state)
+                except Exception:
+                    pass
             else:
                 # legacy v1 checkpoint: global step, raw_params for all modules
                 # For compatibility, treat as if all modules were jointly optimized and convert to completed
@@ -1014,7 +1104,14 @@ def run_calibration(
     from openternary.quant.grouping import GroupwiseResult as _GWRes
     from openternary.quant.grouping import dequantize_groupwise as _degw
 
-    # Helper to save v2 checkpoint
+    # Immutable per-module state dir (P0: avoid aggregating 14M*steps into single checkpoint)
+    calibration_state_dir = out / "artifacts" / "calibration_state"
+    calibration_state_dir.mkdir(parents=True, exist_ok=True)
+
+    def _sanitize_mname(name: str) -> str:
+        return name.replace(".", "_").replace("/", "_")
+
+    # Helper to save v2 checkpoint (manifest based, P0 fix)
     def _save_v2_checkpoint(
         module_idx: int,
         module_name: str,
@@ -1026,6 +1123,25 @@ def run_calibration(
         is_module_done: bool = False,
     ) -> pathlib.Path:
         ckpt_dir.mkdir(parents=True, exist_ok=True)
+        # P0: on module completion, persist immutable per-module state file once
+        if is_module_done:
+            # completed_module_params already contains this module's final raw
+            entry = completed_module_params.get(module_name, {})
+            raw_to_save = entry.get("raw_param", current_raw)
+            thr_to_save = entry.get("raw_threshold", current_thr)
+            if raw_to_save is not None:
+                state_file = calibration_state_dir / f"{_sanitize_mname(module_name)}.pt"
+                tmp_state = state_file.with_suffix(state_file.suffix + ".tmp")
+                payload: dict[str, typing.Any] = {"raw_param": raw_to_save.detach().cpu()}
+                if thr_to_save is not None:
+                    payload["raw_threshold"] = thr_to_save.detach().cpu()
+                # also save zero_mask hint for fast resume (optional)
+                torch.save(payload, str(tmp_state))
+                tmp_state.replace(state_file)
+                print(
+                    f"[checkpoint] module {module_name} state saved {state_file.name} ({state_file.stat().st_size} bytes)",
+                    flush=True,
+                )
         # Determine filename: module checkpoint and also step checkpoint for compatibility
         # Use module_XXXXX for per-module and step_XXXXX for per-step (global)
         # Global step index aggregated across modules
@@ -1033,20 +1149,10 @@ def run_calibration(
         # Save module checkpoint
         mod_path = ckpt_dir / f"module_{module_idx:05d}.pt"
         step_path = ckpt_dir / f"step_{global_step:05d}.pt"
-        # Build completed dict for save (ensure cpu tensors)
-        save_completed = {}
-        for k, v in completed_module_params.items():
-            entry = {}
-            if "raw_param" in v:
-                entry["raw_param"] = (
-                    v["raw_param"].detach().cpu() if hasattr(v["raw_param"], "detach") else v["raw_param"]
-                )
-            if "raw_threshold" in v:
-                entry["raw_threshold"] = (
-                    v["raw_threshold"].detach().cpu() if hasattr(v["raw_threshold"], "detach") else v["raw_threshold"]
-                )
-            # Minimal checkpoint: only raw params, recompute scales on resume/materialize to keep checkpoint small
-            save_completed[k] = entry
+        # Build manifest (no tensors) — list of completed module names with state file existence
+        completed_manifest: list[dict[str, str]] = []
+        for k in completed_module_params:
+            completed_manifest.append({"module": k, "file": f"artifacts/calibration_state/{_sanitize_mname(k)}.pt"})
         ckpt_save: dict[str, typing.Any] = {
             "schema_version": 2,
             "method": str(calib_cfg.method),
@@ -1055,9 +1161,11 @@ def run_calibration(
                 "module_name": module_name,
                 "step": step_in_module if not is_module_done else 0,
                 "steps_per_module": steps_per_module,
-                "completed_count": len(save_completed),
+                "completed_count": len(completed_manifest),
             },
-            "completed_module_params": save_completed,
+            "completed_manifest": completed_manifest,
+            # Keep legacy key for compat (empty to avoid 100MB bloat, but materialize-only checks it)
+            "completed_module_params": {},
             "loss_history": list(loss_history),
             "initial_loss": initial_loss,
             "best_loss": best_loss,
@@ -1072,27 +1180,29 @@ def run_calibration(
             ckpt_save["current_raw_param"] = current_raw.detach().cpu()
         if current_thr is not None:
             ckpt_save["current_raw_threshold"] = current_thr.detach().cpu()
-        # For backward compat, also include aggregated raw_params/raw_thresholds
-        agg_raw = {k: v["raw_param"] for k, v in save_completed.items()}
-        ckpt_save["raw_params"] = agg_raw
-        if threshold_enabled:
-            agg_thr = {k: v["raw_threshold"] for k, v in save_completed.items() if "raw_threshold" in v}
-            if agg_thr:
-                ckpt_save["raw_thresholds"] = agg_thr
-        # also include current if mid-module
+        # P0: do not aggregate all completed raw_params into checkpoint (bloat). Keep only current for mid-module resume.
+        # For materialize, loader will read calibration_state files via manifest, not from checkpoint.
+        ckpt_save["raw_params"] = {}
+        ckpt_save["raw_thresholds"] = {}
         if not is_module_done and current_raw is not None:
-            # include current in raw_params for materialize to see it
             ckpt_save["raw_params"][module_name] = current_raw.detach().cpu()
             if threshold_enabled and current_thr is not None:
-                if "raw_thresholds" not in ckpt_save:
-                    ckpt_save["raw_thresholds"] = {}
                 ckpt_save["raw_thresholds"][module_name] = current_thr.detach().cpu()
         ckpt_save["step"] = global_step
         ckpt_save["loss"] = loss_val
+        # Include RNG state for determinism
+        with contextlib.suppress(Exception):
+            ckpt_save["rng_state"] = torch.get_rng_state()
         # Save atomically via temp file to avoid partial zip (Windows antivirus / concurrent read)
         tmp_step = step_path.with_suffix(step_path.suffix + ".tmp")
         torch.save(ckpt_save, str(tmp_step))
         tmp_step.replace(step_path)
+        # Verbose byte size log
+        try:
+            sz = step_path.stat().st_size
+            print(f"[checkpoint] saved {step_path.name} ({sz} bytes, cursor {ckpt_save['module_cursor']})", flush=True)
+        except Exception:
+            pass
         # Only overwrite module path when module done or checkpoint interval
         with contextlib.suppress(Exception):
             tmp_mod = mod_path.with_suffix(mod_path.suffix + ".tmp")
