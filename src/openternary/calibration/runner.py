@@ -600,17 +600,24 @@ def run_calibration(
             import torch.nn as _nn  # type: ignore[import]
 
             if isinstance(module, _nn.Linear):
-                # simple heuristic: use adapter's role check if available, else include all linears except lm_head
+                # Exclude non-text quantizable modules: lm_head, embeddings, vision/audio towers
                 if "lm_head" in name or "embed" in name:
                     continue
+                if "vision_tower" in name or "audio_tower" in name or "vision_encoder" in name:
+                    continue
+                # Gemma 4 text path is model.language_model etc; keep those
                 target_module_names.append(name)
         if not target_module_names:
             raise ValueError("no quantizable modules found")
     except Exception:
-        # fallback: all Linear
+        # fallback: all Linear except vision/audio
         import torch.nn as _nn  # type: ignore[import]
 
-        target_module_names = [n for n, m in model.named_modules() if isinstance(m, _nn.Linear) and "lm_head" not in n]
+        target_module_names = [
+            n
+            for n, m in model.named_modules()
+            if isinstance(m, _nn.Linear) and "lm_head" not in n and "vision_tower" not in n and "audio_tower" not in n
+        ]
 
     # 3. Capture train and held activations to disk (sharded) — with fingerprint reuse
     from openternary.calibration.capture import DiskActivationCache, capture_teacher_pairs
@@ -1038,26 +1045,7 @@ def run_calibration(
                 entry["raw_threshold"] = (
                     v["raw_threshold"].detach().cpu() if hasattr(v["raw_threshold"], "detach") else v["raw_threshold"]
                 )
-            # also preserve codes/orig etc for materialize (optional)
-            for kk in (
-                "orig_scales",
-                "reference_scales",
-                "codes",
-                "weight_shape",
-                "weight_dtype",
-                "zero_mask",
-                "zero_mask_t",
-                "thr_zero_mask",
-            ):
-                if kk in v:
-                    val = v[kk]
-                    try:
-                        if hasattr(val, "detach"):
-                            entry[kk] = val.detach().cpu()
-                        else:
-                            entry[kk] = val
-                    except Exception:
-                        entry[kk] = val
+            # Minimal checkpoint: only raw params, recompute scales on resume/materialize to keep checkpoint small
             save_completed[k] = entry
         ckpt_save: dict[str, typing.Any] = {
             "schema_version": 2,
@@ -1101,11 +1089,15 @@ def run_calibration(
                 ckpt_save["raw_thresholds"][module_name] = current_thr.detach().cpu()
         ckpt_save["step"] = global_step
         ckpt_save["loss"] = loss_val
-        # Save to both paths (step and module) for discoverability
-        torch.save(ckpt_save, str(step_path))
+        # Save atomically via temp file to avoid partial zip (Windows antivirus / concurrent read)
+        tmp_step = step_path.with_suffix(step_path.suffix + ".tmp")
+        torch.save(ckpt_save, str(tmp_step))
+        tmp_step.replace(step_path)
         # Only overwrite module path when module done or checkpoint interval
         with contextlib.suppress(Exception):
-            torch.save(ckpt_save, str(mod_path))
+            tmp_mod = mod_path.with_suffix(mod_path.suffix + ".tmp")
+            torch.save(ckpt_save, str(tmp_mod))
+            tmp_mod.replace(mod_path)
         return step_path
 
     # Sequential per-module optimization (bounded memory)
