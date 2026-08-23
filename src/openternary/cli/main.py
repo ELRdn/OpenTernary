@@ -642,8 +642,12 @@ def calibrate(
     materialize_only: Annotated[
         bool, typer.Option("--materialize-only", help="Skip training, materialize from latest/step checkpoint only")
     ] = False,
+    init_from: Annotated[
+        pathlib.Path | None,
+        typer.Option("--init-from", help="Warm start from previous calibration run (Phase 4.1 etc)"),
+    ] = None,
 ) -> None:
-    """Calibrate — layer-local recon-scale (Phase 4.1)."""
+    """Calibrate — layer-local recon-scale-threshold (Phase 4.2)."""
     from openternary.config.loader import dump_config_yaml, load_config
     from openternary.experiment.metadata import write_json
     from openternary.experiment.run import create_run
@@ -803,6 +807,17 @@ def calibrate(
         console.print(f"[bold green]materialize-only done:[/bold green] {result.get('calibrated_snapshot')}")
         raise typer.Exit(0)
 
+    # Handle --init-from warm start
+    if init_from is not None:
+        if resume or resume_from is not None:
+            console.print("[red]--init-from cannot be used with --resume/--resume-from[/red]")
+            raise typer.Exit(2)
+        if not pathlib.Path(init_from).exists():
+            console.print(f"[red]--init-from path not found: {init_from}[/red]")
+            raise typer.Exit(2)
+        # store for runner and provenance
+        cfg.calibration.init_from = str(init_from)  # type: ignore[attr-defined]
+
     # Handle --resume --output <existing-run> reuse (no new -001)
     run_dir: pathlib.Path  # type: ignore[no-redef]
     run_id: str  # type: ignore[no-redef]
@@ -855,7 +870,9 @@ def calibrate(
             teacher_snap = None  # type: ignore[no-redef]
             logger.warning("teacher snapshot not found, using dummy for calibration")
 
-        result = run_calibration(cfg, teacher_snap, run_dir, resume=resume, resume_from=resume_from)
+        result = run_calibration(
+            cfg, teacher_snap, run_dir, resume=resume, resume_from=resume_from, init_from=init_from
+        )
     except FileNotFoundError as e:
         _write_failed_metrics(run_dir, run_id, "FileNotFoundError", str(e))
         console.print(f"[red]Snapshot not found:[/red] {e}")

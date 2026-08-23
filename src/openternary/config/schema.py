@@ -47,14 +47,17 @@ class QuantizationConfig(BaseModel):
 
 
 class CalibrationConfig(BaseModel):
-    """較正/再構成設定（Phase 4.1 recon-scale）.
+    """較正/再構成設定（Phase 4.2 recon-threshold 対応）.
 
-    v1.2 FINAL 仕様に準拠。較正は YAML 駆動（CLI オーバーライドは calibration.enabled のみ想定）。
-    window は 4.1 では per-layer のみを許可し、per-block は 4.2 で導入予定のためバリデーションエラーとする。
+    Phase 4.1: method=recon-scale, threshold_enabled=false で完全互換。
+    Phase 4.2: method=recon-threshold, threshold_enabled=true で scale+threshold 同時最適化。
+    window は 4.2 でも per-layer のみ。
     """
 
     enabled: bool = Field(default=False, description="較正を有効化するか")
-    method: Literal["recon-scale"] = Field(default="recon-scale", description="較正手法（4.1 は recon-scale のみ）")
+    method: Literal["recon-scale", "recon-threshold"] = Field(
+        default="recon-scale", description="較正手法（recon-scale: Phase4.1, recon-threshold: Phase4.2）"
+    )
     dataset: Literal["synthetic", "wiki-tiny"] = Field(
         default="synthetic", description="較正用データセット（c4-tinyは4.2以降）"
     )
@@ -62,17 +65,29 @@ class CalibrationConfig(BaseModel):
     seq_len: int = Field(default=128, ge=16, le=512, description="較正サンプル系列長")
     steps: int = Field(default=50, ge=1, description="再構成ステップ数")
     lr: float = Field(default=1e-3, gt=0, description="学習率")
+    # Phase 4.2 threshold fields (後方互換: デフォルト無効で 4.1 と同一)
+    threshold_enabled: bool = Field(default=False, description="閾値学習を有効化するか（Phase 4.2）")
+    threshold_lr: float | None = Field(default=None, description="閾値用学習率（None なら lr を流用）")
+    threshold_init_ratio: float = Field(default=0.5, gt=0.0, lt=1.0, description="閾値初期 ratio（0,1）")
+    threshold_granularity: Literal["per_tensor", "per_group"] = Field(
+        default="per_group", description="閾値粒度（Phase 4.2 は per_group 推奨）"
+    )
+    threshold_estimator: Literal["clipped-ste"] = Field(
+        default="clipped-ste", description="STE 推定器（Phase 4.2 は clipped-ste のみ）"
+    )
+    threshold_ste_width: float = Field(default=0.1, gt=0, description="clipped STE width")
+    threshold_eps: float = Field(default=0.01, gt=0, lt=0.5, description="threshold_ratio 境界 eps")
     optimizer: Literal["adam", "sgd"] = Field(default="adam", description="オプティマイザ種別")
     loss: Literal["mse", "l1"] = Field(default="mse", description="再構成損失種別")
-    window: Literal["per-layer"] = Field(
-        default="per-layer", description="較正ウィンドウ（4.1 は per-layer のみ、per-block は 4.2）"
-    )
+    window: Literal["per-layer"] = Field(default="per-layer", description="較正ウィンドウ（4.1/4.2 は per-layer のみ）")
     checkpoint_interval: int = Field(default=10, ge=1, description="チェックポイント保存間隔（ステップ）")
     allow_dataset_fallback: bool = Field(
         default=False, description="データセット取得失敗時に synthetic へのフォールバックを許可するか"
     )
     held_out_ratio: float = Field(default=0.2, ge=0.05, le=0.5, description="ホールドアウト検証用比率")
     seed: int | None = Field(default=None, description="較正専用シード（None なら AppConfig.seed を継承）")
+    # Phase 4.2 warm start
+    init_from: str | None = Field(default=None, description="Phase 4.1 成果物からの warm start 元 run dir")
 
 
 class GenerationConfig(BaseModel):
