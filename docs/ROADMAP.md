@@ -2,13 +2,15 @@
 
 This roadmap prioritizes **research validity and a stable CLI pipeline** over GUI work.
 
-> **Progress snapshot — 2026-08-21 (Phase 3 CLOSED)**
+> **Progress snapshot — 2026-08-23 (Phase 4.1 CLOSED, Phase 4.2 IN_PROGRESS)**
 > - **Phase 0 — Repository Foundation: ✅ COMPLETE**
 > - **Phase 1a — Gemma 4 E2B Inspection: ✅ COMPLETE** — 1951 tensors / 5,104,298,467 params / 205 quantizable (0.359605) / BF16 9.5075 GB / text 35 layers hidden 1536 vocab 262144, fingerprint `sha256:07fe44eae504218937187b75826a4c780cba2f76a9145fdc38f7efdd4d3a7b01` stable.
 > - **Phase 1b — BF16 Smoke Inference Baseline v1: ✅ COMPLETE** — `AutoProcessor + AutoModelForMultimodalLM`, `bf16 exact`, `thinking=False`, `do_sample=False/num_beams=1`, suite `smoke v1` 5 prompts, warmup→5 timed, 2-run PASS: protocol `sha256:11ac43e68f9bc2079365b224078f4af93dd767c813a0d3d82485c0096507d52d`一致, result `sha256:907fbb73f91d0e97033c59cc1dae65817a9b507d8df4e3b65125a87b9327cfe8`一致.
 > - **Phase 1 Gate: ✅ PASS** — Behavioral baseline frozen, not Quality (Phase 5).
 > - **Phase 2 — Ternary Core & Packing Accounting: ✅ CLOSED** — `src/quant/{ternary,packing,accounting,metrics}.py` canonical AbsMean, 2bit-v1, per-tensor sum, G1–G19 PASS.
 > - **Phase 3 — Model-Level Ternarization (bounded sharded fake-quant): ✅ CLOSED** — LD-RW per_group vectorized zero-branch, bounded sharded writer (512 MiB, flush-before-add, over-size single), HF blobs symlink dereference, content fingerprint (MUST) vs file hash (SHOULD), scale summary+fingerprint (no JSON scale array), `quantize`/`compare` CLI real, whole-model `e2b-naive-pt` (12 shards, 205 tensors, 14.3M groups for G128) + `e2b-naive-g128-rw` both loadable and smoke PASS, protocol match True, result observational, M1–M13 PASS.
+> - **Phase 4.1 — Calibration recon-scale: ✅ CLOSED** — layer-local `codes*scale→F.linear` differentiable, Teacher activation disk-backed sharded, `inverse_softplus`初期化で `effective(step0)==orig`, `per_tensor/per_group` dequantize helper再利用, `steps=full sweep`定義, `sample hash isdisjoint`汚染証明, `calibrate` CLI real (dry-run/filesystemなし, checkpoint/resume), tiny fixture 4 samples/5 stepsで `best<initial`かつ `final<initial`かつ `heldout`改善、G4-1〜12 PASS.
+> - **Phase 4.2 — Calibration recon-threshold (scale+threshold): 🚧 IN_PROGRESS (T4.2-1..6 ✅, T4.2-7/8 ⏳)** — `threshold+scale`分離・`clipped STE`（`threshold_ratio=eps+(1-2eps)*sigmoid(raw)`、`hard_threshold_codes`/`ste_threshold_codes` via `src/openternary/quant/threshold.py`）、`reference_scale` frozen × `reconstruction_scale` learnable、config `configs/gemma4-e2b-threshold.yaml` 準拠、runner 同時最適化＋bounded materialize 対応完了。CLI 表示・ドキュメント最終化は保留.
 
 ---
 
@@ -201,40 +203,96 @@ M13 docs distinguish per_tensor/per_group, fake/packed, behavioral/quality, LD-R
 
 **Goal:** Move beyond static PTQ.
 
-## Deliverables
+**Status: Phase 4.1 ✅ CLOSED — 4.2 🚧 IN_PROGRESS (T4.2-1..6 ✅, T4.2-7/8 ⏳)**
 
-- [ ] teacher activation capture
-- [ ] student/quantized activation capture
-- [ ] reconstruction loss
-- [ ] optimizer loop
-- [ ] learnable quantization parameters
-- [ ] checkpoint/resume
-- [ ] calibration dataset loader
-- [ ] training metrics
-- [ ] early-stop support
+## Deliverables (Phase 4.1)
+
+- [x] teacher activation capture (disk-backed sharded `artifacts/activation_cache/layer_*`, bounded, per-layer load/release)
+- [x] reconstruction loss (`mse`/`l1`/`huber`, `total_squared_error/total_elements` 集約, NaN/Inf loud)
+- [x] optimizer loop (layer-local `F.linear(codes*scale)` → MSE → `Adam(scaleのみ)`, `steps` =全205 Linearの1 full sweep, graph即解放)
+- [x] learnable quantization parameters (non-zeroのみ `softplus(raw)+eps`, `inverse_softplus`で `effective(step0)==orig`, zero-groupはexact 0固定)
+- [x] checkpoint/resume (`artifacts/checkpoint/step_*.pt`, loud error on corrupt, `--resume`はlatest, `--resume-from`明示)
+- [x] calibration dataset loader (`synthetic`はCI専用 `text→tokenizer→input_ids`, 本番は `wiki-tiny`/`c4-tiny`, `allow_dataset_fallback=false`で暗黙fallback禁止)
+- [x] training metrics (`calibration.json`: `loss_history`, `initial/final/best/relative`, `heldout_before/after`, `scale_fingerprint_before/after`, `mean_abs_scale_delta`, `train/heldout/smoke sample hashes` + `isdisjoint`汚染証明)
+- [x] `calibrate` CLI real (dry-runはfilesystemなしで `Target modules N / Estimated cache`表示, `window`は`per-layer`のみ)
+- [ ] early-stop support — deferred to 4.2
+
+## Phase 4.2 — Learnable Thresholds (recon-threshold) 🚧 IN_PROGRESS
+
+**Goal:** `threshold` を `scale` と分離して学習し、`codes` 自体が最適化中に変化するパスを確立する。Phase 2/4.1 の暗黙 `±0.5*scale`（`round`）を `threshold_ratio ∈ (0,1)` で一般化し、clipped STE で微分可能にする。
+
+**Spec:** `docs/plans/phase-4.2-threshold.md` §2（定義・STE・パラメタ化・Config・Runner・Materialize）、`ARCHITECTURE.md` §7、`configs/gemma4-e2b-threshold.yaml`（`PROJECT_SPEC.md` §6/§9 準拠）が正。
+
+### Sub-tasks (T4.2-1..8 — 計画書 Table 準拠)
+
+- [x] **T4.2-1 閾値パラメタ化ヘルパ** — `src/openternary/calibration/optimizer.py` に `build_threshold_params` / `get_effective_threshold_ratio` / `inverse_sigmoid_threshold_ratio` 追加。`ratio = eps + (1-2eps)*sigmoid(raw)`、`eps=0.01`、初期 `0.5` は `inverse_sigmoid(0.5)=0` （`build_scale_params` 既存ロジックは不変・zero_mask 固定を維持）
+- [x] **T4.2-2 Threshold-aware quantize** — `src/openternary/quant/threshold.py`（新規）に `hard_threshold_codes` / `ste_threshold_codes` / `_expand_per_group` を実装。`threshold_ratio=0.5` で既存 `quantize_absmean`/`quantize_groupwise`（`round` 由来 `±0.5*scale`）と codes 一致、`0.3/0.7` で zero_ratio 単調性を確認。`ternary.py`/`grouping.py` の `round` ties-to-even 契約は不変
+- [x] **T4.2-3 STE 最小実装 (clipped STE)** — `src/openternary/quant/threshold.py` 内 `_ClippedSTE(torch.autograd.Function)`：forward=`hard_gate`、backward=`surrogate` へ `grad_output` を素通し。`surrogate = clamp(0.5 + (u - thr)/(2*ste_width), 0, 1)`、`ste_width=0.1`、zero-ref グループは gate/surrogate 共に 0 で grad 遮断
+- [x] **T4.2-4 Config 拡張** — `src/openternary/config/schema.py` `CalibrationConfig` に `threshold_enabled` / `threshold_lr` / `threshold_init_ratio` / `threshold_granularity` / `threshold_estimator: clipped-ste` / `threshold_ste_width` / `threshold_eps` / `init_from` 追加。`method: recon-scale | recon-threshold`（デフォルト `recon-scale` で Phase 4.1 と完全互換）、`window` は `per-layer` のみ維持。`configs/gemma4-e2b-threshold.yaml` は本スキーマに準拠
+- [x] **T4.2-5 Runner 同時最適化** — `src/openternary/calibration/runner.py` で `raw_threshold` を per-module に追加、`Adam([{scales, lr}, {thresholds, threshold_lr}])` 同時最適化。各 forward で `reference_scale`（frozen AbsMean）と `eff_thr_ratio` から `ste_threshold_codes` で codes 再計算 → `w_hat = codes_ste * reconstruction_scale`（`_expand_per_group` で broadcast）。checkpoint に `raw_thresholds`/`threshold_eps`/`threshold_ste_width` を保存、`--resume` は `threshold_enabled` 不一致を loud error
+- [x] **T4.2-6 Materialize 閾値対応** — `src/openternary/quant/fake_quant.py` `materialize_calibrated_snapshot` は `calibrated_state[codes]` をそのまま利用（threshold 反映済み hard codes）、`runner.py` 側で W を bounded に再ロードして `hard_threshold_codes` で最終 codes を確定。`threshold=0.3` で `content_fingerprint` が scale-only と差異、sharded roundtrip は bounded（`O(largest tensor + 512 MiB)`）を維持、`_run_materialize_only` も thresholds 復元対応
+- [ ] **T4.2-7 CLI 表示** — `src/openternary/cli/main.py` `--dry-run` に `Threshold` 行を追加（`inspect`/`quantize`/`benchmark`/`compare` は変更なし）— ⏳ pending
+- [ ] **T4.2-8 ドキュメント** — `ROADMAP.md` / `ARCHITECTURE.md` §7 / `EXPERIMENT_LOG.md` の Gate 章更新（本タスクで ROADMAP/ARCHITECTURE を更新、EXPERIMENT_LOG は次回実験で追記）— ⏳ pending（本ファイルの更新で一部達成）
+
+依存順: `T4.2-1 → T4.2-2 → T4.2-3 → T4.2-5 → T4.2-6`、`T4.2-4` は並行可。`T4.2-7/8` は残作業。
+
+**Config 正準:** `configs/gemma4-e2b-threshold.yaml`（`model.id=google/gemma-4-E2B-it-qat-q4_0-unquantized@6befbaca...`、`quantization: per_group G128 last-dim-rowwise-v1`、`calibration: method=recon-threshold / dataset=wiki-tiny / threshold_*` 一式）は `PROJECT_SPEC.md` §6（再現性要件: config/model/seed等を保存）および §9（YAML スキーマ）に準拠。`allow_dataset_fallback=false` / `held_out_ratio=0.2` / `seed=42` で汚染分離を担保。参照切れなし（`ARCHITECTURE.md` §7、`docs/plans/phase-4.2-threshold.md` §2.4/§6、`src/openternary/config/schema.py` と整合）。
 
 ## Implementation progression
 
-### 4.1
-Learnable scales.
+### 4.1 — Learnable scales ✅ CLOSED
+`scale`のみを学習、Teacher capture→unload→`codes`固定×`scale`学習→bounded streamingでfinal materialization。
 
-### 4.2
-Learnable thresholds.
+### 4.2 — Learnable thresholds 🚧 IN_PROGRESS (T4.2-1..6 ✅)
+`threshold`学習、per-group閾値探索。`reference_scale` frozen × `reconstruction_scale` learnable の分離、`clipped STE`（`threshold_ratio` → `hard gate` + `surrogate`）で `codes` を毎 forward 再計算。`configs/gemma4-e2b-threshold.yaml` が正準。
 
-### 4.3
-Soft-to-hard ternarization.
+### 4.3 — Soft-to-hard ternarization
+STE / temperature annealing。
 
-### 4.4
-Multi-layer/window reconstruction.
+### 4.4 — Multi-layer/window reconstruction
+`per-block` window, cross-layer。
 
-### 4.5
-Research reproduction experiments.
+### 4.5 — Research reproduction experiments
+CAT-Q / ScaleQ 等は再現してから命名。
 
-External methods such as CAT-Q / ScaleQ-inspired approaches must be treated as **research references** until their behavior is actually reproduced.
+## Gate (Phase 4.1: G4-1〜12)
 
-## Gate
+```
+G4-1  dry-runはfilesystem変更なし、stdoutにconfig/dataset/cache estimate
+G4-2  tiny fixture (4 samples,5 steps, CPU <5分) で calibrated_snapshot生成
+G4-3  best_loss < initial かつ final < initial かつ finite（単調は要求しない）
+G4-4  checkpoint step_2/step_4生成、--resumeはlatest step_4→step_5継続
+G4-5  held-out loss改善 + sample hash isdisjointでsmoke汚染なし + smoke protocol True
+G4-6  ruff/mypy/pytest green
+G4-7  docs + fingerprints + dataset provenance保存
+G4-8  scale_fingerprint_before != after かつ mean_abs_scale_delta >1e-9
+G4-9  trainable params == scales count (他0)
+G4-10 zero-groupは開始から終了までexact zero
+G4-11 step0のeffective scales == naive original scales (inverse softplus)
+G4-12 ActivationCache / final materializationはbounded streamingで全205 activation / full model同時RAM保持なし
+```
 
-Calibration consistently improves at least one held-out metric over naive ternary without using held-out evaluation data during optimization.
+**Result: ✅ PASS — tiny fixture `1.583→1.576` (relative 0.0045), heldout `1.460→1.455` (relative 0.0032), 141 tests, ruff/mypy green.**
+
+### Gate (Phase 4.2: G4.2-1〜12 — 計画書 §4 準拠、T4.2-7/8 完了後に最終判定)
+
+```
+G4.2-1  dry-runはfilesystem変更なし、threshold_enabled/threshold_init/cache estimateを表示
+G4.2-2  tiny fixture (4 samples,5 steps, CPU <5分) で threshold_enabled=true が scale-only より best_loss ≤ 同等 かつ finite
+G4.2-3  threshold_enabled=false 時に 4.1 と完全互換（loss_history / fingerprint が 4.1 と一致）
+G4.2-4  checkpointに raw_thresholds が保存され、--resumeで復元され loss が継続（threshold_enabled 不一致は loud error）
+G4.2-5  held-out lossが scale-only 比で改善 or 同等、かつ train/held/smoke の hash isdisjoint 汚染なし
+G4.2-6  ruff/mypy/pytest green（新規 tests 含め 150+）
+G4.2-7  docs + fingerprints + dataset provenance保存、threshold_fingerprint_before != after かつ mean_abs_threshold_delta >1e-9 (enabled時)
+G4.2-8  trainable params == scales count + thresholds count（非ゼロのみ）、ゼログループは exact zero 維持
+G4.2-9  step0の effective_threshold_ratio == 0.5、threshold=0.5 時に naive と codes 一致
+G4.2-10 ActivationCache / materializeはbounded streaming維持、4.6GB embedでOOMなし
+G4.2-11 materializeした calibrated_snapshotが threshold反映で content_fingerprintが scale-onlyと差異、かつ AutoModel load + smoke PASS
+G4.2-12 --materialize-onlyが thresholdチェックポイントから正しく再現
+```
+→ 現状 T4.2-1..6 実装完了により G4.2-3/8/9/10 は unit/実装で担保、G4.2-1/2/4/5/7/11/12 は `threshold_enabled=true` tiny fixture 手動受け入れで検証予定。G4.2-6 は `ruff/mypy/pytest` で検証。
+
+Overall Phase 4 gate: Calibration consistently improves at least one held-out metric over naive ternary without using held-out evaluation data during optimization. → **Phase 4.1で達成、4.2で拡張中（scale+threshold 同時最適化）。**
 
 ---
 
@@ -429,12 +487,17 @@ uv sync --extra ml --locked
 uv run --frozen ruff check src tests
 uv run --frozen ruff format --check src tests
 uv run --frozen mypy src/openternary
-uv run --frozen pytest -q -p no:cacheprovider  # 122 tests incl. grouping/fake_quant/cli_quantize/cli_compare + Phase 1/2
+uv run --frozen pytest -q -p no:cacheprovider  # 141 tests incl. calibration + grouping/fake_quant/cli_* + Phase 1/2
 # Phase 2 single-tensor validation (requires ml extra + local snapshot)
 uv run --frozen python scripts/validate_single_tensor.py
 # Phase 3 whole-model fake-quant (requires ml extra + local snapshot, ~35s per_tensor, ~50s per_group)
 uv run --frozen openternary quantize google/gemma-4-E2B-it-qat-q4_0-unquantized --scale-granularity per_tensor --output runs/e2b-naive-pt
 uv run --frozen openternary quantize google/gemma-4-E2B-it-qat-q4_0-unquantized --scale-granularity per_group --group-size 128 --output runs/e2b-naive-g128-rw
+# Phase 4.1 calibration (tiny fixture, CPU <5s, no Gemma load)
+uv run --frozen openternary calibrate --dry-run
+echo "calibration:\n  enabled: true\n  dataset: synthetic\n  num_samples: 4\n  seq_len: 16\n  steps: 5\n  checkpoint_interval: 2" > /tmp/calib.yaml
+uv run --frozen openternary calibrate --config /tmp/calib.yaml --output runs/calib-tiny
+uv run --frozen pytest -q -p no:cacheprovider tests/test_calibration_*
 # header-only inspection (no ml needed)
 uv run openternary inspect google/gemma-4-E2B-it-qat-q4_0-unquantized --output runs/inspect-smoke-manual
 # BF16 baseline (requires ml extra + local checkpoint)

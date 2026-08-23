@@ -239,32 +239,104 @@ Calibration must be optional.
 ```text
 Teacher / Original Model
           │
-          ├──── capture target activation
+          ├──── capture target activation (disk-backed sharded, per-layer load/release)
           │
-Calibration Input
+Calibration Input (tokenizer → input_ids, wiki-tiny / synthetic, held_out_ratio=0.2, isdisjoint)
           │
-          └──── Quantized Model
+          └──── Quantized Model (layer-local F.linear)
                     │
-                    └──── capture reconstructed activation
-                               │
-                               ▼
-                            Loss
-                               │
-                               ▼
-                         Optimizer
-                               │
-                               ▼
-                     Quantization Params
+                    ├──── reference_scale (frozen AbsMean) ─┐
+                    │                                        ├─→ threshold ─→ hard codes ─┐
+                    │   threshold_ratio (learnable) ────────┘                             │
+                    │                                                                      ▼
+                    └──── reconstruction_scale (learnable) ─────────────────────→ w_hat = codes * scale
+                               │                                                              │
+                               └──── capture reconstructed activation                        │
+                                              │                                              │
+                                              ▼                                              │
+                                           Loss (mse/l1, total_squared_error/total_elements) │
+                                              │                                              │
+                                              ▼                                              │
+                                        Optimizer (Adam: {scales, lr} + {thresholds, threshold_lr}) │
+                                              │                                              │
+                                              ▼                                              │
+                                   Quantization Params (scales + thresholds) ◄──────────────┘
+                                              │
+                                              ▼
+                                   Checkpoint (step_*.pt: raw_params + raw_thresholds) → Bounded materialize
 ```
 
 Initially optimize small quantization-related parameters instead of every original model weight.
 
-Potential trainable parameters:
+### 7.1 Phase 4.1 — Learnable Scales (recon-scale)
 
-- group scale
-- threshold
-- modulation terms
-- soft ternary parameters
+- `codes` は固定（`quantize_absmean` / `quantize_groupwise` の `round` 由来 `±0.5*scale`）。
+- `effective_scale = softplus(raw_scale) + eps`（`eps=1e-6`）、zero-group（`scale==0`）は `where(zero_mask, 0, ...)` で exact 0 固定。
+- 初期化: `raw = inverse_softplus(orig - eps)` で `effective(step0) == orig`（`atol 1e-6`）。
+- `steps` = 全 205 Linear の 1 full sweep、graph は per-module `backward()` 後に即解放。
+
+### 7.2 Phase 4.2 — Learnable Thresholds (recon-threshold): threshold+scale 分離と clipped STE
+
+Phase 4.1 の暗黙 `Q=clamp(round(W/scale))` ＝ `±0.5*scale` を、`threshold_ratio ∈ (eps, 1-eps)` で一般化する。
+
+**分離原則 (threshold+scale separation):**
+
+| 役割 | 値 | 学習 | 用途 |
+|---|---|---|---|
+| `reference_scale` | `mean(abs(W))` FP32, frozen | ❌ | `codes` 割当専用（`hard_threshold_codes` の分母） |
+| `threshold_ratio` | `eps + (1-2eps)*sigmoid(raw_thr)`、`eps=0.01` | ✅ `raw_threshold` | `effective_threshold = threshold_ratio * reference_scale`、codes の 0/±1 境界 |
+| `reconstruction_scale` | `softplus(raw_scale)+eps` | ✅ `raw_scale` | `w_hat = codes * reconstruction_scale` の振幅 |
+
+- `reference_scale` は元重みの AbsMean を frozen で保持し、threshold による code 変化と scale による振幅変化を直交させる。
+- `threshold_ratio` は `sigmoid` で `(0,1)` → `eps` で `(0.01,0.99)` に clamp、初期 `0.5` は `inverse_sigmoid(0.5)=0`（`raw_thr=0`）。
+- per_tensor: 1 threshold / tensor、per_group: 1 threshold / group（scales と同数、LD-RW `last-dim-rowwise-v1` の per-row interleaved 順序に準拠）。zero-group は threshold も学習対象外（`zero_mask` で gate/surrogate を 0 にマスク）。
+- `threshold_estimator = clipped-ste` のみ（Phase 4.2）。`threshold_granularity = per_group` 推奨、`threshold_init_ratio=0.5`、`threshold_lr` は未指定なら `lr` を流用。
+
+**Hard forward:**
+
+```text
+thr_abs = reference_scale * threshold_ratio          # per_tensor: scalar broadcast, per_group: _expand_per_group
+hard_gate = (abs(W) > thr_abs) & (~zero_ref_mask)
+hard_code = sign(W) * hard_gate                      # int8 ∈ {-1,0,1}, zero_ref では常に 0
+```
+
+`group_size=None` なら per_tensor、`group_size=G` なら `reference_scale`/`threshold_ratio` を `_expand_per_group(shape, G)` で `shape` に broadcast。`hard_threshold_codes(W, ref, thr, group_size)` が正準。
+
+**Clipped STE (Straight-Through Estimator):**
+
+`hard_gate` は閾値で非微分なため、backward は clipped surrogate で近似する（Phase 4.2 最小 STE、temperature annealing は 4.3 で導入）。
+
+```python
+u = abs(W) / reference_scale
+margin = u - threshold_ratio_expanded
+surrogate = clamp(0.5 + margin / (2*ste_width), 0, 1)  # ste_width=0.1
+gate_ste = hard_gate.detach() - surrogate.detach() + surrogate  # forward==hard, backward via surrogate
+codes_ste = sign(W) * gate_ste  # float {-1,0,1}, requires_grad は threshold_ratio に流れる
+```
+
+- `ste_width=0.1`（`config.threshold_ste_width`）が線形領域の幅、`|margin| < ste_width` のみで `d surrogate / d thr = -1/(2*width)`、外側は `clamp` で 0。
+- `_ClippedSTE(torch.autograd.Function)` は `forward=hard_gate, backward=grad_output`（`gate_ste = hard - surr.detach() + surr` のため `dL/d surr = grad_output`）。
+- `ste_threshold_codes(W, reference_scale, threshold_ratio, group_size, ste_width)` が正準。per_tensor は scalar `ref`/`thr` を broadcast、per_group は `_expand_per_group` で展開、zero_ref は `surrogate=0` で grad 遮断。
+
+**Runner 同時最適化:**
+
+- per-module `raw_threshold`（`build_threshold_params(n, init_ratio, eps)`) を `all_threshold_params` に追加、`optimizer = Adam([{scales, lr}, {thresholds, threshold_lr}])`。
+- 各 forward で `eff_thr = get_effective_threshold_ratio(raw_thr, eps)` と `weight_tensor`（bounded に都度 `_load_weight`）から `ste_threshold_codes` で codes 再計算 → `w_hat = codes_ste * eff_scale_expanded` → `F.linear(inp, w_hat)` → MSE。
+- `threshold_enabled=false` なら Phase 4.1 と完全互換（`codes` 固定パス）。`step0` では `thr=0.5` で `hard_threshold_codes == quantize_absmean/groupwise` を assert。
+- Checkpoint (`artifacts/checkpoint/step_*.pt`) に `raw_thresholds`/`threshold_eps`/`threshold_ste_width` を追加、`--resume` は `threshold_enabled` 不一致を loud error、`--init-from` は Phase 4.1 成果物からの warm start に使用（`--resume` とは別）。
+
+**Bounded materialize:**
+
+- `calibration.json` に `threshold_fingerprint_before/after`（`sha256(threshold_ratio bytes)`、`before` は全 `0.5`）、`threshold_ratio_{mean,min,max,std}`、`code_fingerprint_before/after`（hard codes の `sha256`）、`code_change_ratio`、`zero/positive/negative_ratio_before/after` を追記。
+- 最終 `calibrated_snapshot` は `hard_threshold_codes` で確定した codes（threshold 反映済み）と `effective_scales` を `materialize_calibrated_snapshot` へ渡し、sharded bounded writer（`512 MiB` flush-before-add）で生成。`content_fingerprint` は threshold ありで scale-only と差異が生じることが期待値。
+- `artifacts/threshold_metrics.jsonl` に per-module の `threshold_after_{mean,min,max}` と `code_change_ratio` を保存。`_run_materialize_only` も thresholds を復元。
+
+Potential trainable parameters (updated):
+
+- [x] group scale (`reconstruction_scale`, Phase 4.1)
+- [x] threshold (`threshold_ratio` via clipped STE, Phase 4.2)
+- [ ] modulation terms (deferred)
+- [ ] soft ternary parameters (Phase 4.3 temperature annealing)
 
 ---
 
@@ -341,10 +413,10 @@ Desired layering:
 
 ```text
 GUI
- ↓
+  ↓
 CLI / Python API
- ↓
+  ↓
 Core
- ↓
+  ↓
 Model framework/runtime
 ```

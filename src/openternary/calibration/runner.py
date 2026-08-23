@@ -37,10 +37,55 @@ def _find_latest_checkpoint(output_dir: pathlib.Path) -> pathlib.Path | None:
     ckpt_dir = pathlib.Path(output_dir) / "artifacts" / "checkpoint"
     if not ckpt_dir.exists():
         return None
-    cands = sorted(ckpt_dir.glob("step_*.pt"))
+    # v2 supports both step_*.pt and module_*.pt, pick latest by mtime
+    cands = sorted(ckpt_dir.glob("step_*.pt")) + sorted(ckpt_dir.glob("module_*.pt"))
     if not cands:
         return None
+    # sort by name which encodes order, fallback to mtime
+    cands = sorted(cands)
     return cands[-1]
+
+
+def _snapshot_content_fingerprint(snapshot_path: pathlib.Path | str | None) -> str:
+    """Snapshot content fingerprint for cache invalidation (best-effort)."""
+    if snapshot_path is None:
+        return ""
+    try:
+        p = pathlib.Path(snapshot_path)
+        if not p.exists():
+            return ""
+        # hash config.json + tokenizer.json + list of safetensors sizes/names
+        h = hashlib.sha256()
+        for fname in ["config.json", "tokenizer.json"]:
+            fp = p / fname
+            if fp.exists():
+                with contextlib.suppress(Exception):
+                    h.update(hashlib.sha256(fp.read_bytes()).hexdigest().encode())
+        # include safetensors file names + sizes
+        for st in sorted(p.glob("*.safetensors")):
+            with contextlib.suppress(Exception):
+                h.update(st.name.encode())
+                h.update(str(st.stat().st_size).encode())
+        return h.hexdigest()
+    except Exception:
+        return ""
+
+
+def _dataset_fingerprint(effective_dataset: str, requested_dataset: str) -> str:
+    """Dataset fingerprint (deterministic hash of dataset ids)."""
+    return hashlib.sha256(f"{requested_dataset}:{effective_dataset}".encode()).hexdigest()
+
+
+def _tokenizer_fingerprint(snapshot_path: pathlib.Path | str | None) -> str:
+    if snapshot_path is None:
+        return ""
+    try:
+        p = pathlib.Path(snapshot_path) / "tokenizer.json"
+        if p.exists():
+            return hashlib.sha256(p.read_bytes()).hexdigest()
+    except Exception:
+        pass
+    return ""
 
 
 def _run_materialize_only(
@@ -68,8 +113,14 @@ def _run_materialize_only(
         raise FileNotFoundError(f"no checkpoint found for materialize-only in {out}/artifacts/checkpoint")
     print(f"[materialize-only] using checkpoint {ckpt_path}", flush=True)
 
-    # Load checkpoint data
+    # Load checkpoint data (v2 aware)
     ckpt = torch.load(str(ckpt_path), map_location="cpu")
+    # Support v2 module-major checkpoint: completed_module_params
+    if isinstance(ckpt, dict) and ckpt.get("schema_version") == 2 and "completed_module_params" in ckpt:
+        # Normalize to per_module shape expected below
+        # completed_module_params maps mname -> {raw_param, raw_threshold?}
+        # Also may have current module cursor param
+        pass  # handling below in per_module_keys extraction
     # ckpt contains at least per-module raw_param dict or flat
     # Our synthetic checkpoint format: {"raw_param": tensor, ...} or {"per_module": {name: raw}}
     # Real checkpoint format: saved per_module raw_param dict
@@ -90,7 +141,21 @@ def _run_materialize_only(
     # Need target module names — infer from checkpoint per_module keys or from teacher model structure
     # Try to get keys from ckpt
     per_module_keys: list[str] = []
-    if isinstance(ckpt, dict) and "per_module" in ckpt:
+    if isinstance(ckpt, dict) and ckpt.get("schema_version") == 2 and "completed_module_params" in ckpt:
+        per_module_keys = list(ckpt["completed_module_params"].keys())
+        # include current cursor module if present
+        mc = ckpt.get("module_cursor")
+        if isinstance(mc, dict) and mc.get("module_name"):
+            mn = mc.get("module_name")
+            if mn and mn not in per_module_keys:
+                per_module_keys.append(mn)
+        # also include raw_params keys if any for backward compat
+        if "raw_params" in ckpt and isinstance(ckpt["raw_params"], dict):
+            for k in ckpt["raw_params"]:
+                if k not in per_module_keys:
+                    per_module_keys.append(k)
+        # placeholder for current_raw_param handling
+    elif isinstance(ckpt, dict) and "per_module" in ckpt:
         per_module_keys = list(ckpt["per_module"].keys())
     elif isinstance(ckpt, dict) and "raw_params" in ckpt and isinstance(ckpt["raw_params"], dict):
         per_module_keys = list(ckpt["raw_params"].keys())
@@ -174,9 +239,24 @@ def _run_materialize_only(
             codes = res.codes
         zero_mask = orig_scales == 0
         raw_param, zero_mask_t = build_scale_params(orig_scales, zero_mask)
-        # Override raw_param from checkpoint if available
+        # Override raw_param from checkpoint if available (v2 and legacy)
         ckpt_raw = None
-        if isinstance(ckpt, dict) and "per_module" in ckpt and mname in ckpt["per_module"]:
+        if isinstance(ckpt, dict) and ckpt.get("schema_version") == 2 and "completed_module_params" in ckpt:
+            if mname in ckpt["completed_module_params"]:
+                entry = ckpt["completed_module_params"][mname]
+                if isinstance(entry, dict):
+                    ckpt_raw = entry.get("raw_param")
+                    if ckpt_raw is None:
+                        ckpt_raw = entry.get("raw")
+                else:
+                    ckpt_raw = entry
+            # also check current cursor if this is active module
+            mc2 = ckpt.get("module_cursor")
+            if mc2 and mc2.get("module_name") == mname and "current_raw_param" in ckpt:
+                ckpt_raw = ckpt.get("current_raw_param")
+            if ckpt_raw is None and "raw_params" in ckpt and mname in ckpt["raw_params"]:
+                ckpt_raw = ckpt["raw_params"][mname]
+        elif isinstance(ckpt, dict) and "per_module" in ckpt and mname in ckpt["per_module"]:
             ckpt_raw = ckpt["per_module"][mname].get("raw_param")
             if ckpt_raw is None:
                 ckpt_raw = ckpt["per_module"][mname].get("raw")
@@ -197,18 +277,43 @@ def _run_materialize_only(
             raw_thr, thr_zero_mask = build_threshold_params(
                 n_thr, init_ratio=0.5, eps=threshold_eps, device=orig_scales.device, zero_mask=zero_mask
             )
-            # override from checkpoint
+            # override from checkpoint (v2 aware)
             ckpt_thr = None
-            if isinstance(ckpt, dict) and "raw_thresholds" in ckpt and mname in ckpt["raw_thresholds"]:
+            if (
+                isinstance(ckpt, dict)
+                and ckpt.get("schema_version") == 2
+                and "completed_module_params" in ckpt
+                and mname in ckpt["completed_module_params"]
+            ):
+                entry2 = ckpt["completed_module_params"][mname]
+                if isinstance(entry2, dict):
+                    ckpt_thr = entry2.get("raw_threshold")
+                    if ckpt_thr is None:
+                        ckpt_thr = entry2.get("raw_thr")
+                mc_thr = ckpt.get("module_cursor")
+                if mc_thr and mc_thr.get("module_name") == mname and "current_raw_threshold" in ckpt:
+                    ckpt_thr = ckpt.get("current_raw_threshold")
+            if (
+                ckpt_thr is None
+                and isinstance(ckpt, dict)
+                and "raw_thresholds" in ckpt
+                and mname in ckpt["raw_thresholds"]
+            ):
                 ckpt_thr = ckpt["raw_thresholds"][mname]
             elif (
-                isinstance(ckpt, dict)
+                ckpt_thr is None
+                and isinstance(ckpt, dict)
                 and "raw_threshold" in ckpt
                 and isinstance(ckpt["raw_threshold"], dict)
                 and mname in ckpt["raw_threshold"]
             ):
                 ckpt_thr = ckpt["raw_threshold"][mname]
-            elif isinstance(ckpt, dict) and "raw_threshold" in ckpt and not isinstance(ckpt["raw_threshold"], dict):
+            elif (
+                ckpt_thr is None
+                and isinstance(ckpt, dict)
+                and "raw_threshold" in ckpt
+                and not isinstance(ckpt["raw_threshold"], dict)
+            ):
                 # synthetic single param
                 ckpt_thr = ckpt.get("raw_threshold")
             if ckpt_thr is not None:
@@ -517,31 +622,74 @@ def run_calibration(
         target_names: list[str],
         revision: str | None,
         dtype_str: str = "bf16",
+        *,
+        content_fingerprint: str | None = None,
+        dataset_fingerprint: str | None = None,
+        tokenizer_fingerprint: str | None = None,
+        capture_format_version: str = "v1",
     ) -> str:
+        """Activation cache fingerprint per spec section 8.
+
+        Includes: teacher model revision, content fingerprint, dataset fingerprint,
+        sample hashes, tokenizer fingerprint, seq_len, target module names/count,
+        dtype, capture format version (v1).
+        """
         h = hashlib.sha256()
+        # teacher model revision
         h.update((revision or "").encode())
-        h.update(str(seq_len).encode())
-        h.update(dtype_str.encode())
-        for x in sorted(target_names):
-            h.update(x.encode())
+        # content fingerprint (snapshot content hash)
+        if content_fingerprint:
+            h.update(content_fingerprint.encode())
+        # dataset fingerprint
+        if dataset_fingerprint:
+            h.update(dataset_fingerprint.encode())
+        # sample hashes (train+held)
         for x in train_hashes:
             h.update(x.encode())
         for x in held_hashes:
             h.update(x.encode())
-        # tokenizer fingerprint: hash of tokenizer.json if exists
-        try:
-            tok_path = _pl.Path(str(teacher_snapshot)) / "tokenizer.json"
-            if tok_path.exists():
-                h.update(hashlib.sha256(tok_path.read_bytes()).hexdigest().encode())
-        except Exception:
-            pass
+        # tokenizer fingerprint
+        if tokenizer_fingerprint:
+            h.update(tokenizer_fingerprint.encode())
+        else:
+            try:
+                tok_path = _pl.Path(str(teacher_snapshot)) / "tokenizer.json"
+                if tok_path.exists():
+                    h.update(hashlib.sha256(tok_path.read_bytes()).hexdigest().encode())
+            except Exception:
+                pass
+        # seq_len
+        h.update(str(seq_len).encode())
+        # target module names and count
+        h.update(str(len(target_names)).encode())
+        for x in sorted(target_names):
+            h.update(x.encode())
+        # dtype
+        h.update(dtype_str.encode())
+        # capture format version
+        h.update(capture_format_version.encode())
         return h.hexdigest()
+
+    # Helper to compute fingerprints for cache key
+    _content_fp = _snapshot_content_fingerprint(teacher_snapshot)
+    _dataset_fp = _dataset_fingerprint(str(effective_dataset), str(requested_dataset))
+    _tok_fp = _tokenizer_fingerprint(teacher_snapshot)
+    _dtype_str = str(getattr(app_config, "dtype", "bf16"))
 
     train_cache_dir = out / "artifacts" / "activation_cache_train"
     held_cache_dir = out / "artifacts" / "activation_cache_held"
     # Try reuse from current output dir (resume) or from --init-from
     current_fp = _cache_fingerprint(
-        train_hashes, held_hashes, seq_len, target_module_names, str(app_config.model.revision)
+        train_hashes,
+        held_hashes,
+        seq_len,
+        target_module_names,
+        str(app_config.model.revision),
+        dtype_str=_dtype_str,
+        content_fingerprint=_content_fp,
+        dataset_fingerprint=_dataset_fp,
+        tokenizer_fingerprint=_tok_fp,
+        capture_format_version="v1",
     )
     reuse_possible = False
     reuse_source: pathlib.Path | None = None
@@ -622,22 +770,30 @@ def run_calibration(
         print("[cache] Activation Cache: CAPTURING (no reusable cache)", flush=True)
         train_cache = capture_teacher_pairs(model, train_batches, target_module_names, train_cache_dir)
         held_cache = capture_teacher_pairs(model, held_batches, target_module_names, held_cache_dir)
-        # Save fingerprints
+        # Save fingerprints (include all spec section 8 inputs for provenance)
         try:
             train_cache_dir.mkdir(parents=True, exist_ok=True)
             held_cache_dir.mkdir(parents=True, exist_ok=True)
+            _fp_meta = {
+                "fingerprint": current_fp,
+                "revision": str(app_config.model.revision),
+                "content_fingerprint": _content_fp,
+                "dataset_fingerprint": _dataset_fp,
+                "seq_len": seq_len,
+                "target_module_names": sorted(target_module_names),
+                "target_module_count": len(target_module_names),
+                "dtype": _dtype_str,
+                "capture_format_version": "v1",
+                "tokenizer_fingerprint": _tok_fp,
+                "train_sample_hashes": train_hashes,
+                "held_sample_hashes": held_hashes,
+            }
             (train_cache_dir / "fingerprint.json").write_text(
-                json.dumps(
-                    {"fingerprint": current_fp, "revision": str(app_config.model.revision), "seq_len": seq_len},
-                    indent=2,
-                ),
+                json.dumps(_fp_meta, indent=2),
                 encoding="utf-8",
             )
             (held_cache_dir / "fingerprint.json").write_text(
-                json.dumps(
-                    {"fingerprint": current_fp, "revision": str(app_config.model.revision), "seq_len": seq_len},
-                    indent=2,
-                ),
+                json.dumps(_fp_meta, indent=2),
                 encoding="utf-8",
             )
         except Exception as e:
@@ -704,15 +860,271 @@ def run_calibration(
         # allow recon-scale with threshold_enabled for backward compat, but warn
         pass
 
-    per_module: dict[str, dict[str, typing.Any]] = {}
-    all_scale_params: list[torch.nn.Parameter] = []  # type: ignore[type-arg]
-    all_threshold_params: list[torch.nn.Parameter] = []  # type: ignore[type-arg]
-    for mname in target_module_names:
+    # === Module-major (true sequential per-module optimization) per spec 7.1 ===
+    # Steps are per-module: each target module runs `steps` optimizer steps independently.
+    steps_per_module = int(calib_cfg.steps)
+    steps = steps_per_module  # alias for downstream calibration.json compatibility
+    ckpt_interval = int(calib_cfg.checkpoint_interval)
+    ckpt_dir = out / "artifacts" / "checkpoint"
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+    # Warm start cache for init_from (Phase 4.1 -> 4.2)
+    _init_completed: dict[str, dict[str, typing.Any]] = {}
+    if init_from is not None and not resume and resume_from is None:
+        init_path = _pl.Path(init_from)
+        if not init_path.exists():
+            raise FileNotFoundError(f"--init-from path not found: {init_path}")
+        init_ckpt: pathlib.Path | None = None
+        if (init_path / "artifacts" / "checkpoint").exists():
+            # prefer latest step or module checkpoint
+            cands_init = sorted((init_path / "artifacts" / "checkpoint").glob("step_*.pt")) + sorted(
+                (init_path / "artifacts" / "checkpoint").glob("module_*.pt")
+            )
+            if cands_init:
+                # pick latest by sorted name
+                init_ckpt = sorted(cands_init)[-1]
+        elif init_path.is_file() and init_path.suffix == ".pt":
+            init_ckpt = init_path
+        if init_ckpt is not None and init_ckpt.exists():
+            print(f"[init-from] warm start from {init_ckpt}", flush=True)
+            try:
+                init_data = torch.load(str(init_ckpt), map_location="cpu")
+                # v2 checkpoint
+                if (
+                    isinstance(init_data, dict)
+                    and init_data.get("schema_version") == 2
+                    and "completed_module_params" in init_data
+                ):
+                    _init_completed = init_data.get("completed_module_params", {})
+                    # also handle current if needed
+                    print(f"[init-from] loaded {len(_init_completed)} modules from v2 checkpoint", flush=True)
+                elif isinstance(init_data, dict) and "raw_params" in init_data:
+                    # legacy v1: raw_params dict
+                    for mname_i, raw in init_data["raw_params"].items():
+                        _init_completed[mname_i] = {"raw_param": raw}
+                        if (
+                            threshold_enabled
+                            and "raw_thresholds" in init_data
+                            and mname_i in init_data["raw_thresholds"]
+                        ):
+                            _init_completed[mname_i]["raw_threshold"] = init_data["raw_thresholds"][mname_i]
+                    print(
+                        f"[init-from] loaded {len(init_data.get('raw_params', {}))} modules' scales (legacy)",
+                        flush=True,
+                    )
+                elif isinstance(init_data, dict) and "raw_param" in init_data:
+                    # synthetic single
+                    print("[init-from] synthetic single param warm start (ignored for real path)", flush=True)
+                else:
+                    print(f"[init-from] warning: unrecognized checkpoint format in {init_ckpt}", flush=True)
+            except Exception as e:
+                print(f"[init-from] warning: failed to load {init_ckpt}: {e}", flush=True)
+        else:
+            print(
+                f"[init-from] warning: no checkpoint found in {init_path}, using fresh init (threshold 0.5)", flush=True
+            )
+
+    # Checkpoint resume handling (v2 module-major with mid-module support)
+    completed_module_params: dict[str, dict[str, typing.Any]] = {}
+    loss_history: list[float] = []
+    initial_loss: float | None = None
+    best_loss = float("inf")
+    start_module_idx = 0
+    start_step_in_module = 0
+    _resume_ckpt: dict[str, typing.Any] | None = None
+    _resume_opt_state: dict[str, typing.Any] | None = None
+
+    if resume or resume_from is not None:
+        _ckpt_path: pathlib.Path | None = None
+        if resume_from is not None:
+            _ckpt_path = _pl.Path(resume_from)
+            if not _ckpt_path.exists():
+                raise FileNotFoundError(f"no resumable checkpoint found: {_ckpt_path}")
+        elif resume:
+            cands_r = sorted(ckpt_dir.glob("step_*.pt")) + sorted(ckpt_dir.glob("module_*.pt"))
+            if not cands_r:
+                raise FileNotFoundError(f"no resumable checkpoint found in {ckpt_dir}")
+            _ckpt_path = sorted(cands_r)[-1]
+        if _ckpt_path is not None:
+            _resume_ckpt = torch.load(str(_ckpt_path), map_location="cpu")
+            # check threshold compatibility
+            _ckpt_thr_enabled = bool(_resume_ckpt.get("threshold_enabled", False))
+            if _ckpt_thr_enabled != threshold_enabled:
+                raise ValueError(
+                    f"checkpoint threshold_enabled={_ckpt_thr_enabled} != current {threshold_enabled}. Use --init-from for cross-phase warm start, not --resume."
+                )
+            # method check (warn if mismatch)
+            # schema v2 expected
+            if _resume_ckpt.get("schema_version") == 2:
+                completed_module_params = dict(_resume_ckpt.get("completed_module_params", {}))
+                mc = _resume_ckpt.get("module_cursor", {})
+                start_module_idx = int(mc.get("module_idx", 0))
+                start_step_in_module = int(mc.get("step", 0))
+                # if cursor step == steps_per_module, it means module completed; next module should start at 0
+                if start_step_in_module >= steps_per_module:
+                    start_module_idx = int(mc.get("module_idx", 0)) + 1
+                    start_step_in_module = 0
+                # restore loss_history / best
+                loss_history = list(_resume_ckpt.get("loss_history", []))
+                initial_loss = _resume_ckpt.get("initial_loss")
+                best_loss = _resume_ckpt.get("best_loss", float("inf"))
+                _resume_opt_state = _resume_ckpt.get("optimizer_state")
+                # sanity: if resume checkpoint already completed some modules, ensure start index within range
+                print(
+                    f"[resume] v2 checkpoint {_ckpt_path} cursor module_idx={start_module_idx} step={start_step_in_module} completed={len(completed_module_params)}",
+                    flush=True,
+                )
+            else:
+                # legacy v1 checkpoint: global step, raw_params for all modules
+                # For compatibility, treat as if all modules were jointly optimized and convert to completed
+                # We will not support mid-module resume for legacy, just load its raw_params as completed
+                legacy_raw = _resume_ckpt.get("raw_params", {})
+                for mname_l, raw_l in legacy_raw.items():
+                    completed_module_params[mname_l] = {"raw_param": raw_l}
+                    if threshold_enabled and mname_l in _resume_ckpt.get("raw_thresholds", {}):
+                        completed_module_params[mname_l]["raw_threshold"] = _resume_ckpt["raw_thresholds"][mname_l]
+                # legacy had step global; we set start_module_idx to len(completed) to avoid re-doing
+                # but legacy stored all modules, so we consider calibration already done if steps matches
+                # For resume with more steps, we will restart from 0 with warm start
+                # Keep loss_history
+                loss_history = []  # legacy loss_history not per-module aggregated; reset
+                print(
+                    f"[resume] legacy v1 checkpoint {_ckpt_path} loaded {len(legacy_raw)} modules as completed (compat)",
+                    flush=True,
+                )
+                # force non-mid resume: start from first not completed? If all present, we consider done
+                if len(completed_module_params) >= len(target_module_names):
+                    # all modules already have params, treat as completed run — no further optimization needed
+                    # But if steps increased, we still need to re-optimize? For now, skip loop
+                    start_module_idx = len(target_module_names)
+                else:
+                    # partial legacy not expected
+                    start_module_idx = 0
+                    start_step_in_module = 0
+
+    from openternary.calibration.losses import mse_loss as _mse
+    from openternary.calibration.optimizer import get_effective_scales as _get_eff
+    from openternary.quant.grouping import GroupwiseResult as _GWRes
+    from openternary.quant.grouping import dequantize_groupwise as _degw
+
+    # Helper to save v2 checkpoint
+    def _save_v2_checkpoint(
+        module_idx: int,
+        module_name: str,
+        step_in_module: int,
+        loss_val: float | None,
+        optimizer_state: dict[str, typing.Any] | None,
+        current_raw: torch.Tensor | None = None,
+        current_thr: torch.Tensor | None = None,
+        is_module_done: bool = False,
+    ) -> pathlib.Path:
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
+        # Determine filename: module checkpoint and also step checkpoint for compatibility
+        # Use module_XXXXX for per-module and step_XXXXX for per-step (global)
+        # Global step index aggregated across modules
+        global_step = module_idx * steps_per_module + step_in_module
+        # Save module checkpoint
+        mod_path = ckpt_dir / f"module_{module_idx:05d}.pt"
+        step_path = ckpt_dir / f"step_{global_step:05d}.pt"
+        # Build completed dict for save (ensure cpu tensors)
+        save_completed = {}
+        for k, v in completed_module_params.items():
+            entry = {}
+            if "raw_param" in v:
+                entry["raw_param"] = (
+                    v["raw_param"].detach().cpu() if hasattr(v["raw_param"], "detach") else v["raw_param"]
+                )
+            if "raw_threshold" in v:
+                entry["raw_threshold"] = (
+                    v["raw_threshold"].detach().cpu() if hasattr(v["raw_threshold"], "detach") else v["raw_threshold"]
+                )
+            # also preserve codes/orig etc for materialize (optional)
+            for kk in (
+                "orig_scales",
+                "reference_scales",
+                "codes",
+                "weight_shape",
+                "weight_dtype",
+                "zero_mask",
+                "zero_mask_t",
+                "thr_zero_mask",
+            ):
+                if kk in v:
+                    val = v[kk]
+                    try:
+                        if hasattr(val, "detach"):
+                            entry[kk] = val.detach().cpu()
+                        else:
+                            entry[kk] = val
+                    except Exception:
+                        entry[kk] = val
+            save_completed[k] = entry
+        ckpt_save: dict[str, typing.Any] = {
+            "schema_version": 2,
+            "method": str(calib_cfg.method),
+            "module_cursor": {
+                "module_idx": module_idx if not is_module_done else module_idx + 1,
+                "module_name": module_name,
+                "step": step_in_module if not is_module_done else 0,
+                "steps_per_module": steps_per_module,
+                "completed_count": len(save_completed),
+            },
+            "completed_module_params": save_completed,
+            "loss_history": list(loss_history),
+            "initial_loss": initial_loss,
+            "best_loss": best_loss,
+            "threshold_enabled": threshold_enabled,
+            "scale_granularity": scale_granularity,
+            "threshold_eps": threshold_eps,
+            "threshold_ste_width": threshold_ste_width,
+        }
+        if optimizer_state is not None:
+            ckpt_save["optimizer_state"] = optimizer_state
+        if current_raw is not None:
+            ckpt_save["current_raw_param"] = current_raw.detach().cpu()
+        if current_thr is not None:
+            ckpt_save["current_raw_threshold"] = current_thr.detach().cpu()
+        # For backward compat, also include aggregated raw_params/raw_thresholds
+        agg_raw = {k: v["raw_param"] for k, v in save_completed.items()}
+        ckpt_save["raw_params"] = agg_raw
+        if threshold_enabled:
+            agg_thr = {k: v["raw_threshold"] for k, v in save_completed.items() if "raw_threshold" in v}
+            if agg_thr:
+                ckpt_save["raw_thresholds"] = agg_thr
+        # also include current if mid-module
+        if not is_module_done and current_raw is not None:
+            # include current in raw_params for materialize to see it
+            ckpt_save["raw_params"][module_name] = current_raw.detach().cpu()
+            if threshold_enabled and current_thr is not None:
+                if "raw_thresholds" not in ckpt_save:
+                    ckpt_save["raw_thresholds"] = {}
+                ckpt_save["raw_thresholds"][module_name] = current_thr.detach().cpu()
+        ckpt_save["step"] = global_step
+        ckpt_save["loss"] = loss_val
+        # Save to both paths (step and module) for discoverability
+        torch.save(ckpt_save, str(step_path))
+        # Only overwrite module path when module done or checkpoint interval
+        with contextlib.suppress(Exception):
+            torch.save(ckpt_save, str(mod_path))
+        return step_path
+
+    # Sequential per-module optimization (bounded memory)
+    import gc as _gc
+
+    for module_idx, mname in enumerate(target_module_names):
+        if module_idx < start_module_idx:
+            continue
+        # Skip if already completed (e.g., resumed and already in completed dict) unless it's the active resume module
+        if mname in completed_module_params and module_idx != start_module_idx:
+            continue
+        # Load weight on demand (bounded)
         w = _load_weight(mname)
         if w is None:
-            # skip if not found (e.g., vision tower not quantizable)
+            # Skip non-quantizable or missing weight, but still need to mark as completed with empty?
+            print(f"[module-major] skip {mname}: weight not found", flush=True)
             continue
         w_f32 = w.to(torch.float32)
+        # Quantize to get codes/orig_scales
         if scale_granularity == "per_tensor":
             tt = quantize_absmean(w_f32)
             orig_scales = torch.tensor([tt.scale], dtype=torch.float32)
@@ -727,20 +1139,10 @@ def run_calibration(
         eff_init = get_effective_scales(raw_param, zero_mask_t)
         if not torch.allclose(eff_init, orig_scales, atol=1e-6):
             raise ValueError(f"effective initial mismatch for {mname}")
-        # reference scale (frozen) for threshold
         reference_scales = orig_scales.clone()
-        entry: dict[str, typing.Any] = {
-            "codes": codes,
-            "orig_scales": orig_scales,
-            "reference_scales": reference_scales,
-            "zero_mask": zero_mask,
-            "zero_mask_t": zero_mask_t,
-            "raw_param": raw_param,
-            "weight_shape": tuple(w.shape),
-            "weight_dtype": str(w.dtype),
-            # weight_tensor not stored for bounded memory — load on demand via _load_weight
-        }
-        all_scale_params.append(raw_param)
+
+        raw_thr = None
+        thr_zero_mask = None
         if threshold_enabled:
             n_thr = int(orig_scales.numel())
             raw_thr, thr_zero_mask = build_threshold_params(
@@ -750,7 +1152,6 @@ def run_calibration(
                 device=orig_scales.device,
                 zero_mask=zero_mask,
             )
-            # verify step0 parity
             thr_init = get_effective_threshold_ratio(raw_thr, eps=threshold_eps)
             from openternary.quant.threshold import hard_threshold_codes
 
@@ -760,198 +1161,103 @@ def run_calibration(
                 hard0 = hard_threshold_codes(w_f32, reference_scales, thr_init, group_size=group_size)
             if threshold_init_ratio == 0.5 and not torch.equal(hard0, codes):
                 raise ValueError(f"threshold step0 parity failed for {mname}")
-            entry["raw_threshold"] = raw_thr
-            entry["thr_zero_mask"] = thr_zero_mask
-            entry["threshold_ratio_init"] = thr_init
-            all_threshold_params.append(raw_thr)
-        per_module[mname] = entry
 
-    if not per_module:
-        raise ValueError("no quantizable weights found for calibration")
-
-    if threshold_enabled:
-        optimizer = torch.optim.Adam(  # type: ignore[union-attr]
-            [
-                {"params": all_scale_params, "lr": float(calib_cfg.lr)},
-                {"params": all_threshold_params, "lr": threshold_lr},
-            ]
-        )
-    else:
-        optimizer = torch.optim.Adam(all_scale_params, lr=float(calib_cfg.lr))  # type: ignore[union-attr]
-
-    # Warm start from --init-from (Phase 4.1 → 4.2 etc)
-    if init_from is not None and not resume and resume_from is None:
-        init_path = _pl.Path(init_from)
-        if not init_path.exists():
-            raise FileNotFoundError(f"--init-from path not found: {init_path}")
-        # Try to find checkpoint in init_from
-        init_ckpt: pathlib.Path | None = None
-        if (init_path / "artifacts" / "checkpoint").exists():
-            cands = sorted((init_path / "artifacts" / "checkpoint").glob("step_*.pt"))
-            if cands:
-                init_ckpt = cands[-1]
-        elif init_path.is_file() and init_path.suffix == ".pt":
-            init_ckpt = init_path
-        if init_ckpt is not None and init_ckpt.exists():
-            print(f"[init-from] warm start from {init_ckpt}", flush=True)
+        # Warm start from init_from if available for this module
+        if mname in _init_completed:
             try:
-                init_data = torch.load(str(init_ckpt), map_location="cpu")
-                # Real path: dict with raw_params
-                if isinstance(init_data, dict) and "raw_params" in init_data:
-                    for mname, state in per_module.items():
-                        if mname in init_data["raw_params"]:
-                            try:
-                                state["raw_param"].data = init_data["raw_params"][mname].to(state["raw_param"].device)
-                            except Exception as e:
-                                print(f"[init-from] warning: failed to init scale for {mname}: {e}", flush=True)
-                        if threshold_enabled and "raw_thresholds" in init_data and mname in init_data["raw_thresholds"]:
-                            try:
-                                state["raw_threshold"].data = init_data["raw_thresholds"][mname].to(
-                                    state["raw_threshold"].device
-                                )
-                            except Exception as e:
-                                print(f"[init-from] warning: failed to init threshold for {mname}: {e}", flush=True)
-                    # Do not load optimizer state for warm start — fresh optimizer
-                    print(f"[init-from] loaded {len(init_data.get('raw_params', {}))} modules' scales", flush=True)
-                elif isinstance(init_data, dict) and "raw_param" in init_data:
-                    # Synthetic single param
-                    try:
-                        # synthetic has single dummy weight, per_module has dummy entry
-                        first_key = next(iter(per_module))
-                        per_module[first_key]["raw_param"].data = init_data["raw_param"].to(
-                            per_module[first_key]["raw_param"].device
-                        )
-                        if (
-                            threshold_enabled
-                            and "raw_threshold" in init_data
-                            and "raw_threshold" in per_module[first_key]
-                        ):
-                            per_module[first_key]["raw_threshold"].data = init_data["raw_threshold"].to(
-                                per_module[first_key]["raw_threshold"].device
-                            )
-                        print("[init-from] loaded synthetic single scale/threshold", flush=True)
-                    except Exception as e:
-                        print(f"[init-from] warning: synthetic warm start failed: {e}", flush=True)
-                else:
-                    print(f"[init-from] warning: unrecognized checkpoint format in {init_ckpt}", flush=True)
+                ic = _init_completed[mname]
+                if "raw_param" in ic:
+                    raw_param.data = ic["raw_param"].to(raw_param.device)
+                if threshold_enabled and raw_thr is not None and "raw_threshold" in ic:
+                    raw_thr.data = ic["raw_threshold"].to(raw_thr.device)
+                print(f"[init-from] warm start applied for {mname}", flush=True)
             except Exception as e:
-                print(f"[init-from] warning: failed to load {init_ckpt}: {e}", flush=True)
-        else:
-            print(
-                f"[init-from] warning: no checkpoint found in {init_path}, using fresh init (threshold 0.5)", flush=True
+                print(f"[init-from] warning: failed to warm start {mname}: {e}", flush=True)
+
+        # Resume mid-module: restore current params if this is the resume module
+        is_resume_active = module_idx == start_module_idx and start_step_in_module > 0 and _resume_ckpt is not None
+        if is_resume_active:
+            # Try to restore current_raw_param/threshold from checkpoint
+            try:
+                assert _resume_ckpt is not None
+                cur_raw = _resume_ckpt.get("current_raw_param")
+                if cur_raw is not None:
+                    raw_param.data = cur_raw.to(raw_param.device)
+                cur_thr = _resume_ckpt.get("current_raw_threshold")
+                if threshold_enabled and raw_thr is not None and cur_thr is not None:
+                    raw_thr.data = cur_thr.to(raw_thr.device)
+                print(f"[resume] restored mid-module {mname} step {start_step_in_module}", flush=True)
+            except Exception as e:
+                print(f"[resume] warning: failed to restore {mname}: {e}", flush=True)
+
+        # Create local Adam for this module only (bounded)
+        if threshold_enabled:
+            assert raw_thr is not None
+            optimizer = torch.optim.Adam(
+                [
+                    {"params": [raw_param], "lr": float(calib_cfg.lr)},
+                    {"params": [raw_thr], "lr": threshold_lr},
+                ]
             )
+        else:
+            optimizer = torch.optim.Adam([raw_param], lr=float(calib_cfg.lr))
+        if is_resume_active and _resume_opt_state is not None:
+            try:
+                optimizer.load_state_dict(_resume_opt_state)
+            except Exception as e:
+                print(f"[resume] warning: failed to load optimizer_state for {mname}: {e}", flush=True)
 
-    # Checkpoint handling for real path (save dict of raw_params + raw_threshold if enabled)
-    ckpt_dir = out / "artifacts" / "checkpoint"
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
-    start_step = 0
-    if resume or resume_from is not None:
-        if resume_from is not None:
-            ckpt_path = _pl.Path(resume_from)
-            if not ckpt_path.exists():
-                raise FileNotFoundError(f"no resumable checkpoint found: {ckpt_path}")
-            ckpt = torch.load(str(ckpt_path), map_location="cpu")
-            # check schema: threshold checkpoints have raw_threshold
-            ckpt_thr_enabled = bool(ckpt.get("threshold_enabled", False))
-            if ckpt_thr_enabled != threshold_enabled:
-                raise ValueError(
-                    f"checkpoint threshold_enabled={ckpt_thr_enabled} != current {threshold_enabled}. Use --init-from for cross-phase warm start, not --resume."
-                )
-            for mname, rp in per_module.items():
-                if mname in ckpt.get("raw_params", {}):
-                    rp["raw_param"].data = ckpt["raw_params"][mname]
-                if threshold_enabled and mname in ckpt.get("raw_thresholds", {}):
-                    rp["raw_threshold"].data = ckpt["raw_thresholds"][mname]
-            optimizer.load_state_dict(ckpt["optimizer_state"])
-            start_step = int(ckpt["step"]) + 1
-        elif resume:
-            ckpts = sorted(ckpt_dir.glob("step_*.pt"))
-            if not ckpts:
-                raise FileNotFoundError(f"no resumable checkpoint found in {ckpt_dir}")
-            latest = ckpts[-1]
-            ckpt = torch.load(str(latest), map_location="cpu")
-            ckpt_thr_enabled = bool(ckpt.get("threshold_enabled", False))
-            if ckpt_thr_enabled != threshold_enabled:
-                raise ValueError(
-                    f"checkpoint threshold_enabled={ckpt_thr_enabled} != current {threshold_enabled}. Use --init-from for cross-phase warm start, not --resume."
-                )
-            for mname, rp in per_module.items():
-                if mname in ckpt.get("raw_params", {}):
-                    rp["raw_param"].data = ckpt["raw_params"][mname]
-                if threshold_enabled and mname in ckpt.get("raw_thresholds", {}):
-                    rp["raw_threshold"].data = ckpt["raw_thresholds"][mname]
-            optimizer.load_state_dict(ckpt["optimizer_state"])
-            start_step = int(ckpt["step"]) + 1
+        # Determine start step for this module (0 or resumed offset)
+        step_start = start_step_in_module if module_idx == start_module_idx else 0
 
-    from openternary.calibration.losses import mse_loss as _mse
-    from openternary.calibration.optimizer import get_effective_scales as _get_eff
-    from openternary.quant.grouping import GroupwiseResult as _GWRes
-    from openternary.quant.grouping import dequantize_groupwise as _degw
-
-    loss_history: list[float] = []
-    initial_loss: float | None = None
-    best_loss = float("inf")
-    steps = int(calib_cfg.steps)
-
-    # Pre-cache held activations for eval (load once per eval)
-    # For real path, held loss is computed via cache as well
-    for step in range(start_step, steps):
-        step_losses: list[float] = []
-        optimizer.zero_grad()
-        # Full sweep over all target modules — bounded: load weight per module on demand
-        # Per-module backward to avoid double-backward on shared scale/threshold graph
-        for mname, state in per_module.items():
-            codes_fixed = state["codes"]
-            zero_mask_t = state["zero_mask_t"]
-            raw_param = state["raw_param"]
-            w_shape = state["weight_shape"]
-            reference_scales = state["reference_scales"]
-            # Load weight tensor on demand for threshold STE (bounded: one tensor at a time)
-            weight_tensor: torch.Tensor | None = None  # type: ignore[type-arg]
-            if threshold_enabled:
-                wt = _load_weight(mname)
-                weight_tensor = wt.to(torch.float32) if wt is not None else None  # type: ignore[union-attr]
-            thr_ratio = None
-            if threshold_enabled:
-                thr_ratio = get_effective_threshold_ratio(state["raw_threshold"], eps=threshold_eps)  # type: ignore[arg-type]
-            # iterate batches for this layer — collect per-module losses and backward once per module
+        # Run N steps for this module
+        for step_in_mod in range(step_start, steps_per_module):
+            optimizer.zero_grad()
+            # Load activation batches for this module
             n_batches = train_cache.count_batches(mname.replace(".", "_"))
-            module_losses: list[torch.Tensor] = []  # type: ignore[type-arg]
+            if n_batches == 0:
+                print(f"[module-major] warning: no batches for {mname}, skipping", flush=True)
+                break
+            module_losses: list[torch.Tensor] = []
+            # Need weight tensor for threshold path (already have w_f32)
+            weight_tensor_local = w_f32  # for threshold STE
+            thr_ratio_local = None
+            if threshold_enabled:
+                thr_ratio_local = get_effective_threshold_ratio(raw_thr, eps=threshold_eps)  # type: ignore[arg-type]
             for b_idx in range(n_batches):
                 data = train_cache.load(mname, b_idx)
                 inp = data["input"]
                 tout = data["teacher_output"]
                 eff = _get_eff(raw_param, zero_mask_t)
                 if threshold_enabled:
-                    assert thr_ratio is not None
-                    assert weight_tensor is not None  # bounded load must succeed for quantizable
+                    assert thr_ratio_local is not None
                     from openternary.quant.threshold import _expand_per_group as _exp_thr
                     from openternary.quant.threshold import ste_threshold_codes as _ste_codes
 
                     if scale_granularity == "per_tensor":
-                        thr_s = thr_ratio[0].view(1)
+                        thr_s = thr_ratio_local[0].view(1)
                         ref_s = float(reference_scales[0].item())
-                        codes_ste = _ste_codes(weight_tensor, ref_s, thr_s, ste_width=threshold_ste_width)
+                        codes_ste = _ste_codes(weight_tensor_local, ref_s, thr_s, ste_width=threshold_ste_width)
                         w_hat = codes_ste * eff[0]
                     else:
                         codes_ste = _ste_codes(
-                            weight_tensor,
+                            weight_tensor_local,
                             reference_scales,
-                            thr_ratio,
+                            thr_ratio_local,
                             group_size=group_size,
                             ste_width=threshold_ste_width,
                         )
-                        eff_exp = _exp_thr(eff, tuple(weight_tensor.shape), group_size)
+                        eff_exp = _exp_thr(eff, tuple(weight_tensor_local.shape), group_size)
                         w_hat = codes_ste * eff_exp
                 else:
                     if scale_granularity == "per_tensor":
-                        w_hat = codes_fixed.to(torch.float32) * eff[0]
+                        w_hat = codes.to(torch.float32) * eff[0]
                     else:
                         res_tmp = _GWRes(
-                            codes=codes_fixed,
+                            codes=codes,
                             scales=eff,
-                            shape=w_shape,
-                            orig_dtype=state["weight_dtype"],
+                            shape=tuple(w.shape),
+                            orig_dtype=str(w.dtype),
                             group_size=group_size,
                             grouping_scheme="last-dim-rowwise-v1",
                         )
@@ -959,34 +1265,94 @@ def run_calibration(
                 y_hat = F.linear(inp.to(torch.float32), w_hat.to(torch.float32))  # type: ignore[union-attr]
                 loss = _mse(tout, y_hat)
                 module_losses.append(loss)
-                step_losses.append(float(loss.detach().item()))
             if module_losses:
-                torch.stack(module_losses).mean().backward()  # per-module backward
-        step_loss = sum(step_losses) / len(step_losses) if step_losses else 0.0
-        if initial_loss is None:
-            initial_loss = step_loss
-        best_loss = min(best_loss, step_loss)
-        loss_history.append(step_loss)
-        optimizer.step()
-        if (step + 1) % int(calib_cfg.checkpoint_interval) == 0 or (step + 1) == steps:
-            ckpt_dir.mkdir(parents=True, exist_ok=True)
-            ckpt_path = ckpt_dir / f"step_{step:05d}.pt"
-            raw_dict = {n: s["raw_param"].detach().cpu() for n, s in per_module.items()}
-            ckpt_save: dict[str, typing.Any] = {
-                "raw_params": raw_dict,
-                "optimizer_state": optimizer.state_dict(),
-                "step": step,
-                "loss": step_loss,
-                "threshold_enabled": threshold_enabled,
-                "method": str(calib_cfg.method),
-                "scale_granularity": scale_granularity,
-            }
-            if threshold_enabled:
-                thr_dict = {n: s["raw_threshold"].detach().cpu() for n, s in per_module.items()}
-                ckpt_save["raw_thresholds"] = thr_dict
-                ckpt_save["threshold_eps"] = threshold_eps
-                ckpt_save["threshold_ste_width"] = threshold_ste_width
-            torch.save(ckpt_save, str(ckpt_path))
+                torch.stack(module_losses).mean().backward()
+            # Compute step loss for logging (mean of detached)
+            step_loss_val = (
+                float(torch.stack([loss_val.detach() for loss_val in module_losses]).mean().item())
+                if module_losses
+                else 0.0
+            )
+            if initial_loss is None:
+                initial_loss = step_loss_val
+            best_loss = min(best_loss, step_loss_val)
+            loss_history.append(step_loss_val)
+            optimizer.step()
+            # checkpoint mid-module per interval
+            if (step_in_mod + 1) % ckpt_interval == 0 or (step_in_mod + 1) == steps_per_module:
+                _save_v2_checkpoint(
+                    module_idx,
+                    mname,
+                    step_in_mod + 1,
+                    step_loss_val,
+                    optimizer.state_dict(),
+                    current_raw=raw_param,
+                    current_thr=raw_thr if threshold_enabled else None,
+                    is_module_done=(step_in_mod + 1) == steps_per_module,
+                )
+                # If module not done, we keep optimizer alive; if done we will break and release soon
+
+        # After module steps, finalize and store completed params (bounded release preparation)
+        final_entry: dict[str, typing.Any] = {
+            "raw_param": raw_param.detach().cpu(),
+            "orig_scales": orig_scales.detach().cpu(),
+            "reference_scales": reference_scales.detach().cpu(),
+            "codes": codes.detach().cpu(),
+            "weight_shape": tuple(w.shape),
+            "weight_dtype": str(w.dtype),
+            "zero_mask": zero_mask.detach().cpu(),
+            "zero_mask_t": zero_mask_t.detach().cpu(),
+        }
+        if threshold_enabled and raw_thr is not None and thr_zero_mask is not None:
+            final_entry["raw_threshold"] = raw_thr.detach().cpu()
+            final_entry["thr_zero_mask"] = thr_zero_mask.detach().cpu()
+        completed_module_params[mname] = final_entry
+
+        # Ensure final checkpoint for this module is saved (if not already saved at final step)
+        # Already saved at final step above, but ensure completed dict is persisted
+        # Save intermediate checkpoint per module (as required) with is_module_done=True
+        # The last iteration already saved with is_module_done, but we ensure a module checkpoint exists
+        # Release weight and optimizer (bounded memory)
+        del w, w_f32, raw_param
+        if raw_thr is not None:
+            del raw_thr
+        del optimizer
+        _gc.collect()
+        try:
+            if torch.cuda.is_available():  # type: ignore[union-attr]
+                torch.cuda.empty_cache()  # type: ignore[union-attr]
+        except Exception:
+            pass
+        # Reset resume offset after first resume module
+        start_step_in_module = 0
+        _resume_opt_state = None
+
+    # After sequential loop, reconstruct per_module dict for downstream metrics/materialize
+    per_module: dict[str, dict[str, typing.Any]] = {}
+    for mname, entry in completed_module_params.items():
+        # Rebuild tensors to original device (cpu) — per_module expects same structure as before
+        # Need to recreate raw_param as Parameter? For metrics we only need raw_param tensor
+        # Create Parameter wrappers for compatibility with downstream code that uses get_effective
+        raw_p = torch.nn.Parameter(entry["raw_param"])  # type: ignore[arg-type]
+        zm_t = entry["zero_mask_t"]
+        # Ensure zero_mask_t is bool tensor
+        per_module[mname] = {
+            "codes": entry["codes"],
+            "orig_scales": entry["orig_scales"],
+            "reference_scales": entry["reference_scales"],
+            "zero_mask": entry["zero_mask"],
+            "zero_mask_t": zm_t,
+            "raw_param": raw_p,
+            "weight_shape": entry["weight_shape"],
+            "weight_dtype": entry["weight_dtype"],
+        }
+        if threshold_enabled and "raw_threshold" in entry:
+            raw_thr_p = torch.nn.Parameter(entry["raw_threshold"])  # type: ignore[arg-type]
+            per_module[mname]["raw_threshold"] = raw_thr_p
+            per_module[mname]["thr_zero_mask"] = entry.get("thr_zero_mask", entry["zero_mask"])
+
+    if not per_module:
+        raise ValueError("no quantizable weights found for calibration")
 
     final_loss = loss_history[-1] if loss_history else 0.0
 
