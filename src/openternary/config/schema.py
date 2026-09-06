@@ -46,6 +46,29 @@ class QuantizationConfig(BaseModel):
     target: QuantizationTargetConfig = Field(default_factory=QuantizationTargetConfig)
 
 
+class VramConfig(BaseModel):
+    """VRAM soft policy — RX7600 8GB default."""
+
+    max_fraction: float = Field(default=0.80, gt=0, le=1.0, description="VRAM max fraction for process")
+    reserve_mb: int = Field(default=1024, ge=0, description="VRAM reserve for desktop (MB)")
+    min_free_mb: int = Field(default=768, ge=0, description="VRAM min free after allocation (MB)")
+
+
+class MicrobatchConfig(BaseModel):
+    """Microbatch policy."""
+
+    auto: bool = Field(default=True, description="Auto shrink microbatch on OOM")
+    min_size: int = Field(default=1, ge=1, description="Minimum microbatch size")
+
+
+class RuntimeConfig(BaseModel):
+    """Runtime backend / VRAM policy — Phase 4.2-G."""
+
+    low_vram: bool = Field(default=True, description="Enable dynamic low-VRAM placement (current module only on GPU)")
+    vram: VramConfig = Field(default_factory=VramConfig)
+    microbatch: MicrobatchConfig = Field(default_factory=MicrobatchConfig)
+
+
 class CalibrationConfig(BaseModel):
     """較正/再構成設定（Phase 4.2 recon-threshold 対応）.
 
@@ -116,6 +139,7 @@ class AppConfig(BaseModel):
     quantization: QuantizationConfig = Field(default_factory=QuantizationConfig)
     calibration: CalibrationConfig = Field(default_factory=CalibrationConfig)
     benchmark: BenchmarkConfig = Field(default_factory=BenchmarkConfig)
+    runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
 
     # 共通オプション（CLI契約）
     seed: int = Field(default=42, description="Random seed for reproducibility")

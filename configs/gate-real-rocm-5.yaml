@@ -1,0 +1,62 @@
+﻿model:
+  id: google/gemma-4-E2B-it-qat-q4_0-unquantized
+  revision: 6befbaca7398925921802abd1f277b495b78b738
+quantization:
+  method: naive
+  codebook:
+  - -1
+  - 0
+  - 1
+  group_size: 128
+  scale_granularity: per_group
+  grouping_scheme: last-dim-rowwise-v1
+  target:
+    attention: true
+    mlp: true
+calibration:
+  enabled: true
+  method: recon-threshold
+  dataset: wiki-tiny
+  num_samples: 4
+  seq_len: 16
+  steps: 2
+  lr: 0.001
+  threshold_enabled: true
+  threshold_lr: 0.0001
+  threshold_init_ratio: 0.5
+  threshold_granularity: per_group
+  threshold_estimator: clipped-ste
+  threshold_ste_width: 0.1
+  threshold_eps: 0.01
+  optimizer: adam
+  loss: mse
+  window: per-layer
+  checkpoint_interval: 1
+  allow_dataset_fallback: false
+  held_out_ratio: 0.2
+  seed: null
+  init_from: D:\VibeCoding\OpenTernary\runs\gate-41-canonical
+benchmark:
+  suite: smoke
+  suites:
+  - smoke
+  thinking: false
+  generation:
+    do_sample: false
+    num_beams: 1
+    max_new_tokens: 64
+  warmup: true
+runtime:
+  low_vram: true
+  vram:
+    max_fraction: 0.8
+    reserve_mb: 1024
+    min_free_mb: 768
+  microbatch:
+    auto: true
+    min_size: 1
+seed: 42
+device: cuda
+dtype: bf16
+output: null
+

@@ -622,11 +622,17 @@ def convert_snapshot(
         # atomic rename
         _atomic_rename(tmp_root, dst_root)
 
-        # file hashes for determinism check (optional)
+        # file hashes for determinism check (optional) — streaming to avoid MemoryError
         file_hashes: dict[str, str] = {}
         for i in range(1, shard_count + 1):
             p = dst_root / f"model-{i:05d}-of-{shard_count:05d}.safetensors"
-            h = _sha256_hex(p.read_bytes())
+            import hashlib as _hl
+
+            h_obj = _hl.sha256()
+            with open(p, "rb") as rf:
+                for chunk in iter(lambda: rf.read(1 << 20), b""):
+                    h_obj.update(chunk)
+            h = h_obj.hexdigest()
             file_hashes[p.name] = f"sha256:{h}"
 
         return ConvertReport(
@@ -1129,7 +1135,13 @@ def materialize_calibrated_snapshot(
         file_hashes: dict[str, str] = {}
         for i in range(1, shard_count + 1):
             p = dst_root / f"model-{i:05d}-of-{shard_count:05d}.safetensors"
-            h = _sha256_hex(p.read_bytes())
+            import hashlib as _hl2
+
+            h_obj2 = _hl2.sha256()
+            with open(p, "rb") as rf2:
+                for chunk2 in iter(lambda: rf2.read(1 << 20), b""):
+                    h_obj2.update(chunk2)
+            h = h_obj2.hexdigest()
             file_hashes[p.name] = f"sha256:{h}"
 
         return ConvertReport(

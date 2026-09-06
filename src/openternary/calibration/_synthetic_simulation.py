@@ -263,7 +263,15 @@ def run_synthetic_tiny(
                 assert raw_threshold is not None
                 ckpt_dict["raw_threshold"] = raw_threshold.detach().cpu()
                 ckpt_dict["reference_scales"] = reference_scales.detach().cpu()
-            torch.save(ckpt_dict, str(ckpt_path))
+            # P0: temp→atomic replace + byte size log
+            tmp_ckpt = ckpt_path.with_suffix(ckpt_path.suffix + ".tmp")
+            torch.save(ckpt_dict, str(tmp_ckpt))
+            tmp_ckpt.replace(ckpt_path)
+            try:
+                sz = ckpt_path.stat().st_size
+                print(f"[checkpoint] saved {ckpt_path.name} ({sz} bytes)", flush=True)
+            except Exception:
+                pass
 
     final_loss = loss_history[-1] if loss_history else 0.0
 

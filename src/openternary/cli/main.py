@@ -646,6 +646,10 @@ def calibrate(
         pathlib.Path | None,
         typer.Option("--init-from", help="Warm start from previous calibration run (Phase 4.1 etc)"),
     ] = None,
+    finalize: Annotated[
+        bool,
+        typer.Option("--finalize", help="Finalization-only recovery: regenerate calibration.json/metrics.json without re-running optimization"),
+    ] = False,
 ) -> None:
     """Calibrate — layer-local recon-scale-threshold (Phase 4.2)."""
     from openternary.config.loader import dump_config_yaml, load_config
@@ -672,6 +676,63 @@ def calibrate(
         console.print(f"[red]window={cfg.calibration.window} is not supported in Phase 4.1 (only per-layer)[/red]")
         raise typer.Exit(2)
 
+    # --- Finalization-only recovery (Phase 4.2) ---
+    if finalize:
+        if materialize_only:
+            console.print("[red]--finalize cannot be used with --materialize-only[/red]")
+            raise typer.Exit(2)
+        if init_from is not None:
+            console.print("[red]--finalize cannot be used with --init-from[/red]")
+            raise typer.Exit(2)
+        # finalize は既存 run 直下へ原子的に書き込むため --output が必須で存在している必要がある
+        run_dir_final = pathlib.Path(cfg.output) if cfg.output else None
+        if run_dir_final is None or not run_dir_final.exists():
+            console.print("[red]--finalize requires existing --output directory (e.g. runs/gemma4-e2b-g128-threshold-real-rocm)[/red]")
+            raise typer.Exit(2)
+        # --resume / --resume-from は finalize では source checkpoint 指定として扱う（新規 -001 を作らない）
+        ckpt_arg: pathlib.Path | None = None
+        if resume_from is not None:
+            ckpt_arg = pathlib.Path(resume_from)
+            if not ckpt_arg.exists():
+                console.print(f"[red]checkpoint not found for --finalize: {ckpt_arg}[/red]")
+                raise typer.Exit(2)
+        # --resume 単体は latest checkpoint を指すため None で OK
+        try:
+            from openternary.calibration.recovery import finalize_run
+
+            result_final = finalize_run(run_dir_final, checkpoint_path=ckpt_arg, dry_run=dry_run)
+        except FileNotFoundError as e:
+            console.print(f"[red]Finalize failed (file not found):[/red] {e}")
+            raise typer.Exit(2) from e
+        except ImportError as e:
+            console.print(f"[red]Finalize failed (missing dependency):[/red] {e}")
+            raise typer.Exit(2) from e
+        except ValueError as e:
+            console.print(f"[red]Finalize failed (integrity gate):[/red] {e}")
+            raise typer.Exit(2) from e
+        except Exception as e:  # noqa: BLE001
+            # IntegrityError など
+            try:
+                from openternary.calibration.recovery import IntegrityError
+
+                if isinstance(e, IntegrityError):
+                    console.print(f"[red]Integrity gate FAILED — fail closed, no files written:[/red] {e}")
+                    raise typer.Exit(2) from e
+            except ImportError:
+                pass
+            console.print(f"[red]Finalize failed:[/red] {e}")
+            raise typer.Exit(1) from e
+        if dry_run:
+            console.print("[bold cyan]finalize: dry-run — integrity gate PASS[/bold cyan]")
+            console.print(f"[dim]Checkpoint: {result_final.get('report', {})}[/dim]" if isinstance(result_final, dict) else "[dim]gate passed[/dim]")
+            console.print(f"[dim]No files were written (--dry-run). Run dir: {run_dir_final}[/dim]")
+        else:
+            console.print(f"[bold green]finalize done:[/bold green] {run_dir_final}")
+            console.print(f"[dim]checkpoint={result_final.get('checkpoint')} state_files={result_final.get('state_files')} tensor_entries={result_final.get('snapshot_tensor_entries')}[/dim]")
+            console.print(f"[dim]calibration.json: {result_final.get('calibration_json')}[/dim]")
+            console.print(f"[dim]metrics.json: {result_final.get('metrics_json')} (status=completed)[/dim]")
+        raise typer.Exit(0)
+
     if dry_run:
         console.print("[bold cyan]calibrate: dry-run — resolved config[/bold cyan]")
         console.print(dump_config_yaml(cfg))
@@ -694,6 +755,11 @@ def calibrate(
         console.print(f"[dim]Target modules: {n_targets} (detected)[/dim]")
         console.print(
             f"[dim]Dataset: {cfg.calibration.dataset} num_samples={cfg.calibration.num_samples} seq_len={cfg.calibration.seq_len}[/dim]"
+        )
+        # T4.2-7: Threshold display (P0 requirement)
+        thr_on = bool(cfg.calibration.threshold_enabled)
+        console.print(
+            f"[dim]Threshold: enabled={thr_on} init={cfg.calibration.threshold_init_ratio} granularity={cfg.calibration.threshold_granularity} estimator={cfg.calibration.threshold_estimator} width={cfg.calibration.threshold_ste_width} eps={cfg.calibration.threshold_eps} lr={cfg.calibration.threshold_lr if cfg.calibration.threshold_lr is not None else cfg.calibration.lr} (method={cfg.calibration.method})[/dim]"
         )
         console.print(f"[dim]Teacher model: ~{teacher_gb:.1f} GB (BF16)[/dim]")
         console.print(f"[dim]Estimated activation cache: ~{est_cache_mb:.1f} MB (disk-backed, sharded)[/dim]")
@@ -818,22 +884,38 @@ def calibrate(
         # store for runner and provenance
         cfg.calibration.init_from = str(init_from)  # type: ignore[attr-defined]
 
-    # Handle --resume --output <existing-run> reuse (no new -001)
+    # Handle --resume / --resume-from reuse (no new -001) — Phase 4.2 fix:
+    # 通常の新規 run は create_run が -001 衝突回避を行うが、resume 系は既存 output を再利用する。
+    # また checkpoint の source run directory から calibration_state を解決できるよう runner 側でフォールバックする。
     run_dir: pathlib.Path  # type: ignore[no-redef]
     run_id: str  # type: ignore[no-redef]
-    if resume and cfg.output and pathlib.Path(cfg.output).exists():
+    _is_resume_requested = bool(resume or resume_from is not None)
+    if _is_resume_requested and cfg.output and pathlib.Path(cfg.output).exists():
         run_dir = pathlib.Path(cfg.output)
-        # check resumable checkpoint exists
+        # --resume-from が別 run の checkpoint を指す場合でも、output 直下の checkpoint と同様に扱う。
+        # 存在チェックは resume_from が指すファイルを優先し、無ければ run_dir/artifacts/checkpoint 内の最新を探索。
         ckpt_dir = run_dir / "artifacts" / "checkpoint"
         has_resumable = False
         if resume_from is not None:
-            has_resumable = pathlib.Path(resume_from).exists()
+            # resume_from が相対でも絶対でも存在すれば OK。無い場合は run_dir からの相対解決も試す
+            p = pathlib.Path(resume_from)
+            if p.exists():
+                has_resumable = True
+            else:
+                alt = run_dir / p
+                has_resumable = alt.exists()
+                # さらに source run が checkpoint の親から推定できる場合、source の checkpoint も許容
+                # ここでは有無のみで判定し、無い場合は runner がエラーにする
         else:
-            if ckpt_dir.exists() and any(ckpt_dir.glob("step_*.pt")):
+            if ckpt_dir.exists() and (any(ckpt_dir.glob("step_*.pt")) or any(ckpt_dir.glob("module_*.pt"))):
                 has_resumable = True
         if not has_resumable:
-            console.print(f"[red]no resumable checkpoint found in {run_dir}[/red]")
-            raise typer.Exit(2)
+            # resume_from が別 run を指す場合は run_dir 側に checkpoint が無くても許容する
+            if resume_from is not None and pathlib.Path(resume_from).exists():
+                has_resumable = True
+            else:
+                console.print(f"[red]no resumable checkpoint found in {run_dir}[/red]")
+                raise typer.Exit(2)
         # read existing run_id if available
         try:
             import json as _json
@@ -846,9 +928,9 @@ def calibrate(
                 run_id = "resume"
         except Exception:
             run_id = "resume"
-    elif resume:
+    elif _is_resume_requested:
         # resume requested but no existing output to resume from
-        console.print("[red]no resumable checkpoint found: --resume requires existing --output directory[/red]")
+        console.print("[red]no resumable checkpoint found: --resume/--resume-from requires existing --output directory[/red]")
         raise typer.Exit(2)
     else:
         run_dir, run_id = create_run(cfg)
