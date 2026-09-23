@@ -1,6 +1,6 @@
 # CLI real-library validation evidence
 
-Date: 2026-09-23. Local validation only; GitHub CI has not run for these changes.
+Date: 2026-09-23. The local evidence below was captured before the first push. Hosted results are tracked separately in [GitHub Actions](https://github.com/ELRdn/OpenTernary/actions/workflows/ci.yml).
 All generated networks are artificial. No pretrained weights were downloaded or loaded.
 
 ## Environment and scope

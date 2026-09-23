@@ -1,14 +1,32 @@
 """CLI help and exit code tests — Phase 0 acceptance criteria."""
 
 import json
+import os
 import pathlib
 import struct
+import subprocess
+import sys
 
+import pytest
+from click import unstyle
 from typer.testing import CliRunner
 
 from openternary.cli.main import app
 
 runner = CliRunner()
+
+
+@pytest.mark.parametrize("arguments", [["--help"], ["quantize", "--help"]])
+def test_help_with_windows_legacy_output_encoding(arguments: list[str]) -> None:
+    """Non-UTF-8 Windows output must not turn help into an encoding exception."""
+    result = subprocess.run(
+        [sys.executable, "-m", "openternary", *arguments],
+        env={**os.environ, "PYTHONIOENCODING": "cp1252", "PYTHONUTF8": "0"},
+        capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr.decode("cp1252", errors="replace")
+    assert b"Usage:" in result.stdout
 
 
 def test_main_help_shows_six_commands() -> None:
@@ -22,13 +40,13 @@ def test_inspect_help_shows_common_options() -> None:
     result = runner.invoke(app, ["inspect", "--help"])
     assert result.exit_code == 0
     for opt in ["--config", "--output", "--seed", "--device", "--dtype", "--dry-run", "--load-weights"]:
-        assert opt in result.output, f"missing option {opt}"
+        assert opt in unstyle(result.output), f"missing option {opt}"
 
 
 def test_quantize_help_shows_group_size() -> None:
     result = runner.invoke(app, ["quantize", "--help"])
     assert result.exit_code == 0
-    assert "--group-size" in result.output
+    assert "--group-size" in unstyle(result.output)
 
 
 def test_dry_run_exit_0_no_side_effect() -> None:

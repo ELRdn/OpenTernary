@@ -34,7 +34,7 @@ WSLの検証環境はCPU版Torch。WSLでのROCm試験は環境構成の対象�
 | CLI-5 | 全tensor inventory、shape/dtype/有限値、packed全重みbyte一致、隔離GGUF converter、実reader/CPU生成 | native packed実行は非対応。Llama FP32以外のGGUF認定は未実施 |
 | CLI-6 | quality schema 3、path非依存source/interface、実device/環境、load/推論のRAM/VRAM/時間 | 実モデルでの品質・性能受入、画像の人間評価 |
 | CLI-7 | 制御fixtureの成功選択・全候補不合格・予算・再開・改変拒否、実人工モデルworkerと再開 | 実モデルの有用な候補選択とVRAM/速度制約 |
-| CLI-8 | Windows/WSLのinstalled wheel、実plugin衝突/API拒否、CIへの共通script接続、license棚卸し | GitHub CI本実行、license TBDの決定、署名・公開 |
+| CLI-8 | Windows/WSLのinstalled wheel、実plugin衝突/API拒否、CIへの共通script接続、license棚卸し | 各commitのGitHub CI合格、license TBDの決定、署名・公開 |
 
 ## 最終検証
 
@@ -46,7 +46,11 @@ WSLの検証環境はCPU版Torch。WSLでのROCm試験は環境構成の対象�
 - WSLのprocess/tensor/schema契約テストも**13 passed**。成功する制御workerと人工ネットワークの品質不合格は別証拠。
 - packedは値・dtype・shape・byte一致。TorchAOはper_tensor INT8を検証し、CPUの量子化直後対保存後出力は厳密一致。GPU FP32の別process出力差は最大約3.58e-7、記録済み許容誤差rtol=1e-5/atol=1e-6内。BF16再読込は今回厳密一致。これは品質閾値の変更ではない。
 - 計測GPU VRAM（Torch allocator）の最大値は約84.6MiB。GPU関連試験の壁時計合計は失敗試行・起動時間を含め約650秒、30分上限内。ドライバの総常駐量や速度優劣の認定ではない。
-- 追加領域は約11.3GiB、人工成果物は4GiB未満。最終値・log/hashは[証拠記録](CLI_VALIDATION_EVIDENCE.md)。GitHub CIは定義を更新したが未実行。
+- 実装検証終了時の追加領域は約11.3GiB、人工成果物は4GiB未満。値・log/hashは[証拠記録](CLI_VALIDATION_EVIDENCE.md)。push後のGitHub CI結果は[Actions](https://github.com/ELRdn/OpenTernary/actions/workflows/ci.yml)でcommitごとに確認する。
+
+### push後のCI修正
+
+最初の[GitHub CI実行](https://github.com/ELRdn/OpenTernary/actions/runs/35824126877)ではWindows/Linuxの実ライブラリwheel試験が通過した。一方、Torchなし環境の型推論、Windows cp1252でのヘルプ出力、ANSI装飾付きヘルプの文字列検査が失敗したため、bytes戻り値の明示・ヘルプ文言・装飾を除いた同一項目検査を修正した。cp1252の別process回帰テスト2件を追加し、ローカルで関連31件とcore環境のmypyを通した。上記326件の記録は追加前のもので、最新の全件結果は修正commitのCIを参照する。
 
 ## 見つかって修正した不具合
 

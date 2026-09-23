@@ -18,7 +18,7 @@ def quantize(
     device: Annotated[str | None, typer.Option("--device", help="Device: auto/cpu/cuda")] = None,
     dtype: Annotated[
         str | None,
-        typer.Option("--dtype", help="Dtype: bf16/fp16/fp32 (quantize preserves original dtype; benchmarkで制御)"),
+        typer.Option("--dtype", help="Dtype: bf16/fp16/fp32 (quantize preserves source dtype; used by benchmark)"),
     ] = None,
     group_size: Annotated[int | None, typer.Option("--group-size", help="Group size for ternary quantization")] = None,
     scale_granularity: Annotated[

@@ -6,6 +6,7 @@ import types
 from types import SimpleNamespace
 
 import pytest
+from click import unstyle
 from typer.testing import CliRunner
 
 from openternary.cli.main import app
@@ -18,10 +19,10 @@ runner = CliRunner()
 def test_cli_quality_help_exposes_frozen_data_and_split() -> None:
     result = runner.invoke(app, ["quality", "--help"])
     assert result.exit_code == 0
-    assert "--data" in result.output
-    assert "--split" in result.output
-    assert "--max-length" in result.output
-    assert "--stride" in result.output
+    assert "--data" in unstyle(result.output)
+    assert "--split" in unstyle(result.output)
+    assert "--max-length" in unstyle(result.output)
+    assert "--stride" in unstyle(result.output)
 
 
 def test_cli_quality_dry_run_validates_dataset_before_claiming_success(tmp_path) -> None:

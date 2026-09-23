@@ -25,7 +25,7 @@ def compare(
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Show config and exit")] = False,
     verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Verbose")] = False,
 ) -> None:
-    """Compare benchmark runs — behavioral Δ (observational)."""
+    """Compare benchmark runs — behavioral delta (observational)."""
     from openternary.config.loader import dump_config_yaml, load_config
     from openternary.experiment.metadata import write_json
     from openternary.experiment.run import create_run
@@ -81,7 +81,7 @@ def compare(
     try:
         from rich.table import Table
 
-        table = Table(title="Compare — behavioral Δ (observational)", show_header=True)
+        table = Table(title="Compare — behavioral delta (observational)", show_header=True)
         table.add_column("Metric", style="cyan")
         table.add_column("Value", style="white")
         table.add_row("Protocol match", str(result.get("protocol_match")))
