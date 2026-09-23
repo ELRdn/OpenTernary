@@ -25,6 +25,45 @@ def test_sample_hash_deterministic() -> None:
     assert sample_hash(b) != h1
 
 
+def test_capture_preserves_padding_mask(tmp_path: pathlib.Path) -> None:
+    class Teacher(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.proj = nn.Linear(1, 2, bias=False)
+
+        def forward(self, input_ids, attention_mask):
+            return self.proj(input_ids.float().unsqueeze(-1))
+
+    cache = capture_teacher_pairs(
+        Teacher(),
+        [{"input_ids": torch.tensor([2, 3, 0]), "attention_mask": torch.tensor([1, 1, 0])}],
+        ["proj"],
+        tmp_path,
+    )
+    pair = cache.load("proj", 0)
+    assert pair["attention_mask"].tolist() == [[1, 1, 0]]
+    assert pair["input"].shape == (1, 3, 1)
+
+
+def test_valid_pairs_exclude_padding_and_reject_legacy_cache(tmp_path: pathlib.Path) -> None:
+    cache = DiskActivationCache(tmp_path)
+    cache.save(
+        "proj",
+        0,
+        {
+            "input": torch.tensor([[[2.0], [3.0], [999.0]]]),
+            "teacher_output": torch.tensor([[[4.0], [6.0], [999.0]]]),
+            "attention_mask": torch.tensor([[1, 1, 0]]),
+        },
+    )
+    pair = cache.load_valid("proj", 0)
+    assert pair["input"].tolist() == [[2.0], [3.0]]
+    assert pair["teacher_output"].tolist() == [[4.0], [6.0]]
+    cache.save("legacy", 0, {"input": torch.ones(2, 1), "teacher_output": torch.ones(2, 1)})
+    with pytest.raises(ValueError, match="mask"):
+        cache.load_valid("legacy", 0)
+
+
 def test_disk_cache_save_load() -> None:
     import shutil
     import uuid

@@ -54,4 +54,8 @@ def __getattr__(name: str) -> object:
         from openternary.quant import fake_quant as _fq
 
         return getattr(_fq, name)
+    if name in {"harden_soft_codes", "soft_ternary_codes", "temperature_at_step"}:
+        from openternary.quant import soft_ternary as _soft_ternary
+
+        return getattr(_soft_ternary, name)
     raise AttributeError(f"module 'openternary.quant' has no attribute {name!r}")

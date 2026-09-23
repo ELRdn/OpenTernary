@@ -23,6 +23,8 @@ from openternary.benchmark.suites import (
     result_fingerprint,
 )
 from openternary.config.schema import AppConfig
+from openternary.services.identity import snapshot_identity
+from openternary.services.resources import measured, phase
 
 
 def _resolve_device_map(device: str) -> str | dict[str, str] | None:
@@ -43,9 +45,11 @@ def _resolve_device_map(device: str) -> str | dict[str, str] | None:
             return "auto"
         return {"": "cpu"}
     if device == "cuda":
-        # 明示CUDA要求だが実機がCPU-onlyなら loud error ではなく Accelerateに委譲
-        # （BF16 exact と同様、from_pretrained で失敗すれば上位で捕捉）
-        return "auto"
+        if not has_cuda:
+            from openternary.services.errors import HardwareError
+
+            raise HardwareError("device=cuda requested but no GPU is available")
+        return {"": "cuda:0"}
     if device == "cpu":
         return {"": "cpu"}
     return "auto"
@@ -64,6 +68,7 @@ def _dtype_to_torch_dtype(dtype_str: str) -> Any:
     return mapping[dtype_str]
 
 
+@measured
 def run_benchmark(
     config: AppConfig,
     snapshot_path: pathlib.Path | None = None,
@@ -92,10 +97,10 @@ def run_benchmark(
         import torch  # type: ignore[import-not-found]
     except ImportError as e:
         raise ImportError("torch is required for benchmark. Install with: uv sync --extra ml") from e
-    try:
-        from transformers import AutoModelForMultimodalLM, AutoProcessor  # type: ignore[import-not-found]
-    except ImportError as e:
-        raise ImportError("transformers>=5.6.2 is required for benchmark. Install with: uv sync --extra ml") from e
+    from openternary.adapters.runtime import load_model, load_processor
+    from openternary.utils.seed import seed_everything
+
+    seed_everything(config.seed)
 
     # dtype は exact — BF16 要求時にCPUで非対応ならフォールバックせずエラー
     requested_dtype = config.dtype
@@ -122,35 +127,17 @@ def run_benchmark(
     # プロセッサ / モデル ロード
     device_map = _resolve_device_map(config.device)
 
+    phase("load", device_map.get("", "cpu") if isinstance(device_map, dict) else "cuda:0")
+
     # AutoProcessor / AutoModelForMultimodalLM は snapshot_path を直接受ける
     try:
-        processor = AutoProcessor.from_pretrained(str(snapshot_path), trust_remote_code=False)
+        processor = load_processor(config, snapshot_path)
     except Exception as e:
         raise RuntimeError(f"Failed to load AutoProcessor from {snapshot_path}: {e}") from e
 
     # モデルロード — dtype は exact
     model_load_start = time.perf_counter()
-    try:
-        model = AutoModelForMultimodalLM.from_pretrained(
-            str(snapshot_path),
-            dtype=torch_dtype,  # transformers 5.x は dtype 引数
-            device_map=device_map,  # type: ignore[arg-type]
-            trust_remote_code=False,
-        )
-    except TypeError:
-        # 古い transformers が torch_dtype 引数名を要求する場合のフォールバック
-        try:
-            model = AutoModelForMultimodalLM.from_pretrained(
-                str(snapshot_path),
-                torch_dtype=torch_dtype,  # type: ignore[call-arg]
-                device_map=device_map,  # type: ignore[arg-type]
-                trust_remote_code=False,
-            )
-        except Exception as e2:
-            raise RuntimeError(f"Failed to load AutoModelForMultimodalLM from {snapshot_path}: {e2}") from e2
-    except Exception as e:
-        # BF16 非対応などの loud error をそのまま伝播（CLIで exit 2 にする）
-        raise RuntimeError(f"Failed to load model with dtype={requested_dtype}: {e}") from e
+    model = load_model(config, snapshot_path, torch_dtype, device_map)
 
     model_load_ms = (time.perf_counter() - model_load_start) * 1000
 
@@ -171,6 +158,8 @@ def run_benchmark(
         pass  # 検証できない環境ではスキップ
 
     model.eval()
+    actual_device = str(next(model.parameters()).device)
+    phase("inference", actual_device)
 
     # Suite 解決
     prompts = list(SMOKE_PROMPTS)
@@ -258,7 +247,8 @@ def run_benchmark(
             "requested": requested_dtype,
             "actual": str(torch_dtype),
         },
-        "device": config.device,
+        "device": actual_device,
+        "identity": snapshot_identity(snapshot_path),
         "seed": config.seed,
         "model_load_ms": round(model_load_ms, 2),
         "warmup": {"executed": warmup_executed},

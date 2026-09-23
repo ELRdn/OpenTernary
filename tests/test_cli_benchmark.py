@@ -10,6 +10,7 @@ import sys
 import types
 import uuid
 
+from click import unstyle
 from typer.testing import CliRunner
 
 from openternary.cli.main import app
@@ -52,8 +53,8 @@ def _write_fake_snapshot(base: pathlib.Path) -> pathlib.Path:
 def test_cli_benchmark_help_shows_suite_and_thinking() -> None:
     result = runner.invoke(app, ["benchmark", "--help"])
     assert result.exit_code == 0
-    assert "--suite" in result.output
-    assert "--thinking" in result.output
+    assert "--suite" in unstyle(result.output)
+    assert "--thinking" in unstyle(result.output)
 
 
 def test_cli_benchmark_dry_run() -> None:

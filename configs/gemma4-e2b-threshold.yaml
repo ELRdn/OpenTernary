@@ -1,0 +1,50 @@
+# Gemma 4 E2B — Phase 4.2 recon-threshold (learnable scale + threshold)
+model:
+  id: google/gemma-4-E2B-it-qat-q4_0-unquantized
+  revision: 6befbaca7398925921802abd1f277b495b78b738
+
+quantization:
+  method: naive
+  codebook: [-1, 0, 1]
+  group_size: 128
+  scale_granularity: per_group
+  grouping_scheme: last-dim-rowwise-v1
+  target:
+    attention: true
+    mlp: true
+
+calibration:
+  enabled: true
+  method: recon-threshold
+  dataset: wiki-tiny
+  num_samples: 32
+  seq_len: 128
+  steps: 50
+  lr: 0.001
+  threshold_enabled: true
+  threshold_lr: 0.0001
+  threshold_init_ratio: 0.5
+  threshold_granularity: per_group
+  threshold_estimator: clipped-ste
+  threshold_ste_width: 0.1
+  threshold_eps: 0.01
+  optimizer: adam
+  loss: mse
+  window: per-layer
+  checkpoint_interval: 10
+  allow_dataset_fallback: false
+  held_out_ratio: 0.2
+  seed: 42
+
+benchmark:
+  suite: smoke
+  thinking: false
+  generation:
+    do_sample: false
+    num_beams: 1
+    max_new_tokens: 64
+  warmup: true
+
+seed: 42
+device: auto
+dtype: bf16

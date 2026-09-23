@@ -2,15 +2,22 @@ name: CI
 
 on:
   push:
-    branches: [main, "feat/**", "fix/**"]
+    branches: [main, "feat/**", "fix/**", "codex/**"]
   pull_request:
     branches: [main]
 
+env:
+  HF_HUB_OFFLINE: "1"
+  HF_DATASETS_OFFLINE: "1"
+  CUDA_VISIBLE_DEVICES: "-1"
+  HIP_VISIBLE_DEVICES: "-1"
+
 jobs:
-  ci:
-    runs-on: ubuntu-latest
+  core:
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
+        os: [ubuntu-latest, windows-latest]
         python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
@@ -33,12 +40,72 @@ jobs:
       - name: Mypy
         run: uv run --frozen mypy src/openternary
 
-      - name: Pytest
-        run: uv run --frozen pytest -q
+      - name: Core-only contracts (no ML dependencies)
+        run: >-
+          uv run --frozen pytest -q
+          tests/test_cli_product.py tests/test_search_product.py
+          tests/test_config_loader.py tests/test_adapter_gemma4.py
+          tests/test_run_metadata.py tests/test_cli_help.py
+          tests/test_extensions_product.py tests/test_artifact_product.py
+
+      - name: Build wheel and sdist
+        run: uv build
+
+  ml-fixtures:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --locked --extra ml --extra calibration
+      - name: CPU tensors and model test doubles only
+        run: uv run --frozen python scripts/validate_cli_offline.py
+
+  real-library-wheel:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: .cli-wheel/bin/python
+          - os: windows-latest
+            python: .cli-wheel/Scripts/python.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          python-version: "3.12"
+          version: "0.12.5"
+      - run: uv build --wheel
+      - run: uv venv .cli-wheel --python 3.12
+      - run: uv pip install --python ${{ matrix.python }} torch==2.13.0 torchvision==0.28.0 --index-url https://download.pytorch.org/whl/cpu
+      - run: uv pip install --python ${{ matrix.python }} dist/openternary-0.1.0a0-py3-none-any.whl transformers==5.15.1 accelerate==1.14.0 safetensors==0.8.0 diffusers==0.40.0 sentencepiece==0.2.2
+      - run: uv pip install --python ${{ matrix.python }} --no-deps torchao==0.18.0
+      - name: Installed wheel, seeded real libraries, fresh processes
+        run: ${{ matrix.python }} scripts/validate_cli_real.py --root "${{ runner.temp }}/cli-real" --require-wheel
+      - name: Installed entry-point plugins
+        run: ${{ matrix.python }} scripts/validate_cli_plugins.py --root "${{ runner.temp }}/cli-plugins" --uv uv
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cli-real-${{ matrix.os }}
+          path: |
+            ${{ runner.temp }}/cli-real/*.json
+            ${{ runner.temp }}/cli-real/*.log
+            ${{ runner.temp }}/cli-plugins/*.json
+            ${{ runner.temp }}/cli-plugins/*.log
 
   # Fallback pip check (ensure pip install still works without uv)
   pip-fallback:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -46,3 +113,5 @@ jobs:
           python-version: "3.12"
       - run: pip install -e .
       - run: openternary --help
+      - run: openternary doctor --json
+      - run: openternary backends list --json

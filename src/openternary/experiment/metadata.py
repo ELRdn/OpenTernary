@@ -5,15 +5,17 @@ from __future__ import annotations
 import datetime
 import hashlib
 import json
+import os
 import pathlib
 import platform
 import sys
+import tempfile
 
 import psutil
 
 from openternary import __version__
 from openternary.config.schema import AppConfig
-from openternary.utils.git import get_git_branch, get_git_commit
+from openternary.utils.git import code_provenance, get_git_branch, get_git_commit
 
 
 def _uv_lock_hash() -> str:
@@ -68,6 +70,7 @@ def collect_environment(
         "uv_lock_hash": _uv_lock_hash(),
         "git_commit": get_git_commit(),
         "git_branch": get_git_branch(),
+        "code_provenance": code_provenance(),
         "seed": config.seed,
         "PYTHONHASHSEED": __import__("os").environ.get("PYTHONHASHSEED", "not set (subprocess only)"),
         "config": config.model_dump(),
@@ -77,7 +80,16 @@ def collect_environment(
 
 
 def write_json(path: pathlib.Path, data: dict[str, object]) -> None:
-    """JSON を整形して書き出し."""
+    """Atomically replace a complete JSON document, including after interruption."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    temporary: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as f:
+            temporary = f.name
+            json.dump(data, f, ensure_ascii=False, indent=2, allow_nan=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            pathlib.Path(temporary).unlink(missing_ok=True)

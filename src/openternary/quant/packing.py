@@ -143,4 +143,4 @@ def unpack_ternary(
 def pack_bytes(codes: torch.Tensor) -> bytes:  # type: ignore[type-arg]
     """pack_ternaryのbytes版ヘルパ."""
     packed = pack_ternary(codes)
-    return packed.numpy().tobytes()  # type: ignore[union-attr]
+    return bytes(packed.numpy().tobytes())  # type: ignore[union-attr]

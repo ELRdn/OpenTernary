@@ -9,25 +9,31 @@ The project begins with **Gemma 4 E2B** as the first research target and focuses
 > [!WARNING]
 > OpenTernary is a research project. Early outputs may be slow, inaccurate, incompatible with common runtimes, or significantly worse than the original model.
 
+Product planning: [CLI Product Roadmap](CLI_ROADMAP.md) covers CLI reliability, backend integration, artifacts, export, and automation. Model-quality research remains tracked in [Research Roadmap](ROADMAP.md) and the [P0–P7 acceptance plan](docs/plans/p0-p7-research-acceptance.md).
+
+**CLI implementation update (2026-09-23):** Offline planning, backend/adapter services, atomic manifests, packed export, bounded search, JSON output, and plugin discovery are implemented. Validation now includes seeded synthetic Llama/Diffusers networks, real TorchAO, Windows/WSL installed wheels, RX 9070 XT FP32/BF16 execution, and pinned llama.cpp CPU generation. Pretrained-model quality, native low-bit kernel certification, and release acceptance remain pending. See the [CLI guide](docs/CLI.md) and [implementation/validation matrix](docs/CLI_IMPLEMENTATION_STATUS.md).
+
 ---
 
-## Quickstart (uv) — Phase 0
+## Quickstart (core CLI)
 
 **推奨: uv で再現可能な環境を構築**
 
 ```bash
-git clone <repo>
+git clone https://github.com/ELRdn/OpenTernary.git
 cd OpenTernary
 uv sync
 uv run openternary --help
-uv run --frozen pytest
+uv run --frozen openternary doctor --json
+uv run --frozen openternary backends list --json
+uv run --frozen openternary plan --json
 ```
 
 開発時チェック:
 
 ```bash
-uv run --frozen ruff check .
-uv run --frozen ruff format --check .
+uv run --frozen ruff check src tests
+uv run --frozen ruff format --check src tests
 uv run --frozen mypy src/openternary
 ```
 
@@ -36,13 +42,15 @@ Fallback (pip):
 ```bash
 pip install -e .
 openternary --help
-pytest
+openternary doctor --json
 ```
 
 - Python 3.12 を推奨（`uv python pin 3.12` で固定、`requires-python >=3.11`）
 - `uv.lock` + `.python-version` + `config.yaml` + `environment.json` で再現性を担保
 
 詳細は `docs/ENVIRONMENT.md` を参照。
+
+The core install does not include PyTorch. Tensor conversion requires `[ml]`; optional integrations use `[ml,torchao]` or `[ml,diffusion]`. Keep hardware-specific environments separate. Run `python scripts/validate_cli_offline.py` in an existing development environment for the fixture-only checks; this script installs nothing and uses empty Hugging Face caches.
 
 ---
 
@@ -142,42 +150,29 @@ GUI
 
 ---
 
-## Planned CLI
+## CLI
 
-The following commands describe the intended UX. They are **not guaranteed to exist yet** (Phase 0 はスタブ).
+Commands: `inspect`, `plan`, `doctor`, `backends list/info`, `quantize`, `calibrate`, `benchmark`, `quality`, `evaluate`, `compare`, `export`, `artifacts validate`, `optimize`, `plugins`, `cache list/remove`, and the compatible `cache-info` entry point.
 
-```bash
-openternary inspect MODEL
-openternary benchmark MODEL --suite baseline
-openternary quantize MODEL --method naive --group-size 128
-openternary compare BASELINE QUANTIZED
-openternary calibrate MODEL --config configs/gemma4-e2b.yaml
-openternary export MODEL --format fake-quant
-openternary export MODEL --format gguf
-```
-
-Example target flow:
+Model-free planning (no download, inference, or output directory):
 
 ```bash
-openternary inspect google/gemma-4-E2B-it-qat-q4_0-unquantized
-
-openternary benchmark google/gemma-4-E2B-it-qat-q4_0-unquantized \
-  --output runs/e2b-baseline
-
-openternary quantize google/gemma-4-E2B-it-qat-q4_0-unquantized \
-  --method naive \
-  --group-size 128 \
-  --output runs/e2b-naive
-
-openternary benchmark runs/e2b-naive \
-  --output runs/e2b-naive-bench
-
-openternary compare \
-  runs/e2b-baseline \
-  runs/e2b-naive-bench
+openternary plan /path/to/local-snapshot --backend ternary --scheme absmean --json
+openternary quantize /path/to/local-snapshot --scale-granularity per_group --group-size 128 --dry-run --json
+openternary calibrate --config configs/gemma4-e2b-calibration.yaml --dry-run --json
 ```
 
-Phase 0 では未実装コマンドは `--dry-run` で計画表示（exit 0）、通常実行は `Not implemented in Phase 0` で exit 1。
+The following is a future model-validation sequence, not evidence that a particular model works:
+
+```bash
+openternary quantize /path/to/local-snapshot --device cpu --output runs/cli-ternary
+openternary export runs/cli-ternary --format ternary-packed --output runs/cli-packed
+openternary export runs/cli-packed --format safetensors --output runs/cli-restored
+openternary artifacts validate runs/cli-restored --json
+openternary benchmark runs/cli-restored --suite smoke --output runs/cli-smoke
+```
+
+`artifacts validate` checks the manifest and file integrity; model reload and quality are separate checks. Packed artifacts require unpacking for inference. GGUF uses an explicitly selected local llama.cpp converter, currently restricted to Llama/Mistral/Qwen2 metadata and floating-point output. Synthetic Llama FP32 has passed pinned llama.cpp CPU validation; other architectures and precisions remain unverified. Full options, JSON/exit-code contracts, and migration notes are in [docs/CLI.md](docs/CLI.md).
 
 ---
 
@@ -231,6 +226,8 @@ OpenTernary/
 ├─ src/openternary/
 │  ├─ cli/
 │  ├─ config/
+│  ├─ services/
+│  ├─ backends/
 │  ├─ experiment/
 │  ├─ utils/
 │  ├─ adapters/
@@ -334,6 +331,8 @@ A later GUI can make these workflows accessible without hiding the underlying ex
 ---
 
 ## Status
+
+The CLI product status is recorded separately in [CLI_IMPLEMENTATION_STATUS.md](docs/CLI_IMPLEMENTATION_STATUS.md). The research milestones below are historical evidence; the new CLI integrations have not yet been tested with real models.
 
 **Phase 3 — Model-Level Ternarization (bounded sharded fake-quant): CLOSED (2026-08-21)**
 

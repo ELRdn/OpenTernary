@@ -188,6 +188,27 @@ def aggregated_mse_loss(
 
 
 # 後方互換エイリアス（名称揺れ対策）
+def backward_reconstruction(
+    teacher: torch.Tensor,
+    student: torch.Tensor,
+    total_elements: int,
+    kind: str = "mse",
+) -> float:
+    """Accumulate one fresh graph's weighted gradient, returning only a scalar.
+
+    Callers must recompute learnable transforms for every microbatch. The
+    denominator is the entire module's valid output-element count, not batches.
+    """
+    if total_elements < teacher.numel() or total_elements <= 0:
+        raise ValueError("invalid total_elements for reconstruction")
+    losses = {"mse": mse_loss, "l1": l1_loss}
+    if kind not in losses:
+        raise ValueError(f"unsupported reconstruction loss: {kind}")
+    loss = losses[kind](teacher, student) * (teacher.numel() / total_elements)
+    loss.backward()
+    return float(loss.detach().item())
+
+
 aggregate_mse_loss = aggregated_mse_loss
 global_mse_loss = aggregated_mse_loss
 

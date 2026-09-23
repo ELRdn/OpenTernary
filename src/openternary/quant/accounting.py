@@ -98,6 +98,7 @@ def _excluded_original_bits(classified: list[dict[str, object]]) -> int:
 def estimate_whole_model(
     classified: list[dict[str, object]],
     scale_dtype: str = "fp32",
+    num_scales: int | None = None,
 ) -> dict[str, object]:
     """Whole-model ternary size見積もり.
 
@@ -112,7 +113,7 @@ def estimate_whole_model(
     logical_bits = logical_2bit_bits(quant_params)
     padding_bits = packed_bits - logical_bits
     ideal_bits = ideal_ternary_bits(quant_params)
-    scale_bits = scale_overhead_bits(num_quantizable, scale_dtype)
+    scale_bits = scale_overhead_bits(num_quantizable if num_scales is None else num_scales, scale_dtype)
     excluded_bits = _excluded_original_bits(classified)
 
     estimated_total_bits = packed_bits + scale_bits + excluded_bits
@@ -123,6 +124,7 @@ def estimate_whole_model(
         "packing": "2bit-v1",
         "scale_dtype": scale_dtype,
         "num_quantizable_tensors": num_quantizable,
+        "num_scales": num_quantizable if num_scales is None else num_scales,
         "quantizable_params": quant_params,
         "ideal_ternary_bits": ideal_bits,
         # 互換: 旧名称も併記（docsではidealを推奨）

@@ -29,6 +29,8 @@ ml = [
 calibration = [
     "datasets>=2.18",
 ]
+torchao = ["torchao==0.18.0"]
+diffusion = ["diffusers==0.40.0"]
 
 [project.scripts]
 openternary = "openternary.cli.main:app"
@@ -52,6 +54,14 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/openternary"]
+
+[tool.hatch.build.targets.sdist]
+only-include = [
+    "src/openternary", "tests", "configs", "docs", "scripts", ".github",
+    "pyproject.toml", "uv.lock", "README.md", "CLI_ROADMAP.md", "ROADMAP.md",
+    "PROJECT_SPEC.md", "ARCHITECTURE.md", "BENCHMARKS.md", "RESEARCH_PLAN.md",
+]
+exclude = ["**/__pycache__", "**/*.pyc", "**/*.safetensors", "**/*.pt", "**/*.ckpt", "**/*.bin"]
 
 [tool.uv]
 required-version = "==0.12.5"

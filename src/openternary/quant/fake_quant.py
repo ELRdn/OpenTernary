@@ -17,6 +17,7 @@ import math
 import pathlib
 import shutil
 import struct
+import tempfile
 from typing import Any
 
 try:
@@ -62,36 +63,10 @@ def _get_torch_dtype_map() -> dict[str, Any]:
 
 
 def _atomic_rename(src: pathlib.Path, dst: pathlib.Path) -> None:
-    """Windows でも PermissionError を避けるためリトライ付きで tmp->dst を rename."""
-    import time
-
+    """Publish a new destination without destroying existing user artifacts."""
     if dst.exists():
-        shutil.rmtree(dst, ignore_errors=True)
-    # retry for antivirus / file handle delay on Windows
-    last_exc: Exception | None = None
-    for attempt in range(5):
-        try:
-            src.rename(dst)
-            return
-        except PermissionError as e:
-            last_exc = e
-            time.sleep(0.05 * (attempt + 1))
-        except OSError:
-            # fallback to shutil.move
-            try:
-                shutil.move(str(src), str(dst))
-                return
-            except Exception as e2:
-                last_exc = e2
-                time.sleep(0.05 * (attempt + 1))
-    # final attempt with shutil.move
-    try:
-        shutil.move(str(src), str(dst))
-        return
-    except Exception:
-        pass
-    if last_exc:
-        raise last_exc
+        raise FileExistsError(f"destination already exists: {dst}")
+    src.rename(dst)
 
 
 def _require_torch() -> None:
@@ -239,7 +214,10 @@ def _classify_tensor(name: str, shape: list[int], dtype: str, app_config: Any) -
     """Adapter経由でquantizable判定. Gemma4優先、fallbackはbase."""
     from openternary.adapters.gemma4 import Gemma4Adapter
 
-    adapter = Gemma4Adapter()
+    adapter = Gemma4Adapter(
+        target_attention=bool(app_config.quantization.target.attention),
+        target_mlp=bool(app_config.quantization.target.mlp),
+    )
     try:
         info = adapter.classify(name, shape, dtype)
         return (info.role, info.quantizable, info.exclude_reason)
@@ -297,19 +275,22 @@ def convert_snapshot(
     except Exception:
         pass  # not fatal if check fails
 
-    tmp_root = dst_root.parent / (dst_root.name + ".tmp")
-    if tmp_root.exists():
-        shutil.rmtree(tmp_root)
-    tmp_root.mkdir(parents=True, exist_ok=True)
+    if dst_root.exists() or dst_root == src_root:
+        raise FileExistsError(f"destination already exists: {dst_root}")
+    dst_root.parent.mkdir(parents=True, exist_ok=True)
+    tmp_root = pathlib.Path(tempfile.mkdtemp(prefix=f".{dst_root.name}-", dir=dst_root.parent))
 
     try:
         # 1. copy non-weight files (HF blobs symlink対応)
         _copy_non_weight_files(src_root, tmp_root)
 
         # 2. open source safetensors
-        weight_file = _find_safetensors_file(src_root)
-        # Use safe_open streaming
-        from safetensors import safe_open
+        from openternary.adapters.registry import select_adapter
+        from openternary.services.passes import apply_passes, plan_passes
+        from openternary.services.snapshot import SnapshotReader
+
+        adapter = select_adapter(app_config, src_root)
+        plan_passes(app_config.quantization.passes, "ternary")
 
         # Prepare shard buffer bounded
         buffer: dict[str, Any] = {}
@@ -332,7 +313,7 @@ def convert_snapshot(
         from openternary.quant.ternary import dequantize, quantize_absmean
 
         # We need sorted tensor names for determinism
-        with safe_open(str(weight_file), framework="pt", device="cpu") as f:
+        with SnapshotReader(src_root) as f:
             keys = sorted(f.keys())
             # Also need header info for shape/dtype? Use f.get_slice for shape
             for name in keys:
@@ -356,9 +337,13 @@ def convert_snapshot(
                 shape = list(tensor.shape)
                 param_count = int(tensor.numel())
                 # classification
-                role, quantizable, exclude_reason = _classify_tensor(name, shape, orig_dtype_s, app_config)
+                info = adapter.classify(name, shape, orig_dtype_s)
+                role, quantizable, exclude_reason = info.role, info.quantizable, info.exclude_reason
+                if app_config.quantization.mixed_precision.get(name) == "preserve":
+                    quantizable, exclude_reason = False, "mixed_precision: preserve"
 
                 if quantizable:
+                    tensor = apply_passes(tensor, app_config.quantization.passes)
                     total_quantizable += 1
                     # quantize
                     if scale_granularity == "per_tensor":
@@ -562,11 +547,13 @@ def convert_snapshot(
 
         # Use accounting helper if available, else manual
         try:
-            est = estimate_whole_model(classified, scale_dtype="fp32")  # type: ignore[arg-type]
+            est = estimate_whole_model(
+                classified, scale_dtype="fp32", num_scales=total_groups if scale_granularity == "per_group" else None
+            )  # type: ignore[arg-type]
             # For grouped, override scale_overhead
             if scale_granularity == "per_group":
                 grouped_overhead = total_groups * 32
-                est["scale_overhead_bits"] = total_quantizable * 32  # keep per_tensor for reference
+                est["per_tensor_scale_overhead_bits"] = total_quantizable * 32
                 est["grouped_scale_overhead_bits"] = grouped_overhead
                 est["num_scales"] = total_groups
                 est["num_quantizable_tensors"] = total_quantizable
@@ -593,6 +580,8 @@ def convert_snapshot(
         quantization_json: dict[str, Any] = {
             "version": 1,
             "method": "naive",
+            "passes": [p.model_dump() for p in app_config.quantization.passes],
+            "mixed_precision": app_config.quantization.mixed_precision,
             "codebook": [-1, 0, 1],
             "scale_granularity": scale_granularity,
             "grouping_scheme": grouping_scheme,
@@ -622,11 +611,17 @@ def convert_snapshot(
         # atomic rename
         _atomic_rename(tmp_root, dst_root)
 
-        # file hashes for determinism check (optional)
+        # file hashes for determinism check (optional) — streaming to avoid MemoryError
         file_hashes: dict[str, str] = {}
         for i in range(1, shard_count + 1):
             p = dst_root / f"model-{i:05d}-of-{shard_count:05d}.safetensors"
-            h = _sha256_hex(p.read_bytes())
+            import hashlib as _hl
+
+            h_obj = _hl.sha256()
+            with open(p, "rb") as rf:
+                for chunk in iter(lambda: rf.read(1 << 20), b""):
+                    h_obj.update(chunk)
+            h = h_obj.hexdigest()
             file_hashes[p.name] = f"sha256:{h}"
 
         return ConvertReport(
@@ -710,10 +705,10 @@ def materialize_calibrated_snapshot(
     if not src_root.exists() or not src_root.is_dir():
         raise FileNotFoundError(f"src_snapshot not found: {src_root}")
 
-    tmp_root = dst_root.parent / (dst_root.name + ".tmp")
-    if tmp_root.exists():
-        shutil.rmtree(tmp_root)
-    tmp_root.mkdir(parents=True, exist_ok=True)
+    if dst_root.exists() or dst_root == src_root:
+        raise FileExistsError(f"destination already exists: {dst_root}")
+    dst_root.parent.mkdir(parents=True, exist_ok=True)
+    tmp_root = pathlib.Path(tempfile.mkdtemp(prefix=f".{dst_root.name}-", dir=dst_root.parent))
 
     try:
         _materialize_log(f"[materialize] copy non-weight files: {src_root} -> {tmp_root}")
@@ -1068,11 +1063,13 @@ def materialize_calibrated_snapshot(
             )
 
         try:
-            est = estimate_whole_model(classified, scale_dtype="fp32")  # type: ignore[arg-type]
+            est = estimate_whole_model(
+                classified, scale_dtype="fp32", num_scales=total_groups if scale_granularity == "per_group" else None
+            )  # type: ignore[arg-type]
             if scale_granularity == "per_group":
                 grouped_overhead = total_groups * 32
                 # keep per_tensor for reference
-                est["scale_overhead_bits"] = sum(1 for e in per_tensor_entries if e["quantizable"]) * 32
+                est["per_tensor_scale_overhead_bits"] = sum(1 for e in per_tensor_entries if e["quantizable"]) * 32
                 est["grouped_scale_overhead_bits"] = grouped_overhead
                 est["num_scales"] = total_groups
                 est["num_quantizable_tensors"] = sum(1 for e in per_tensor_entries if e["quantizable"])
@@ -1129,7 +1126,13 @@ def materialize_calibrated_snapshot(
         file_hashes: dict[str, str] = {}
         for i in range(1, shard_count + 1):
             p = dst_root / f"model-{i:05d}-of-{shard_count:05d}.safetensors"
-            h = _sha256_hex(p.read_bytes())
+            import hashlib as _hl2
+
+            h_obj2 = _hl2.sha256()
+            with open(p, "rb") as rf2:
+                for chunk2 in iter(lambda: rf2.read(1 << 20), b""):
+                    h_obj2.update(chunk2)
+            h = h_obj2.hexdigest()
             file_hashes[p.name] = f"sha256:{h}"
 
         return ConvertReport(

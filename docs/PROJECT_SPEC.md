@@ -1,5 +1,7 @@
 # OpenTernary Project Specification
 
+> Historical design copy. The maintained specification is [../PROJECT_SPEC.md](../PROJECT_SPEC.md); current CLI behavior and implementation limits are in [CLI.md](CLI.md) and [CLI_IMPLEMENTATION_STATUS.md](CLI_IMPLEMENTATION_STATUS.md).
+
 ## 1. Product Definition
 
 OpenTernary is an open-source research toolkit for converting and studying open-weight LLMs under ternary weight constraints.

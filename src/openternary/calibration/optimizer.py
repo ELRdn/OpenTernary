@@ -186,8 +186,152 @@ def get_effective_scales(
     return result
 
 
+def _sigmoid(x: torch.Tensor) -> torch.Tensor:  # type: ignore[type-arg]
+    """sigmoid helper."""
+    _require_torch()
+    return torch.sigmoid(x)  # type: ignore[union-attr]
+
+
+def inverse_sigmoid_threshold_ratio(
+    ratio: torch.Tensor,  # type: ignore[type-arg]
+    eps: float = 0.01,
+) -> torch.Tensor:  # type: ignore[type-arg]
+    """threshold_ratio から raw_threshold を逆算.
+
+    ratio = eps + (1-2eps) * sigmoid(raw)
+    => sigmoid(raw) = (ratio - eps)/(1-2eps)
+    => raw = logit((ratio - eps)/(1-2eps))
+
+    Args:
+        ratio: threshold_ratio tensor ∈ (eps, 1-eps)
+        eps: 境界 eps (default 0.01)
+
+    Returns:
+        raw_threshold tensor (float32, same device)
+
+    Raises:
+        ValueError: ratio が範囲外 / NaN/Inf
+    """
+    _require_torch()
+    if not torch.isfinite(ratio).all().item():  # type: ignore[union-attr]
+        raise ValueError("NaN/Inf in ratio")
+    if not (0 < eps < 0.5):
+        raise ValueError(f"eps must be in (0,0.5), got {eps}")
+    # clamp ratio to (eps, 1-eps) with small margin to avoid logit inf
+    # but we want strict check: ratio must be in (eps, 1-eps)
+    if (ratio <= eps).any().item() or (ratio >= 1 - eps).any().item():  # type: ignore[union-attr]
+        raise ValueError(
+            f"ratio must be in ({eps}, {1 - eps}), got min {float(ratio.min().item())} max {float(ratio.max().item())}"
+        )
+    r = ratio.to(torch.float32)  # type: ignore[union-attr]
+    p = (r - eps) / (1 - 2 * eps)
+    # clamp p to (1e-6, 1-1e-6) for logit stability
+    p = torch.clamp(p, 1e-6, 1 - 1e-6)  # type: ignore[union-attr]
+    raw = torch.log(p / (1 - p))  # logit  # type: ignore[union-attr]
+    if not torch.isfinite(raw).all().item():  # type: ignore[union-attr]
+        raise ValueError("NaN/Inf in inverse_sigmoid result")
+    return raw
+
+
+def build_threshold_params(
+    num_groups: int | torch.Tensor,  # type: ignore[type-arg]
+    init_ratio: float = 0.5,
+    eps: float = 0.01,
+    device: str | torch.device | None = None,  # type: ignore[type-arg]
+    zero_mask: torch.Tensor | None = None,  # type: ignore[type-arg]
+) -> tuple[Parameter, torch.Tensor]:  # type: ignore[type-arg]
+    """Learnable threshold ratio パラメータを構築.
+
+    ratio = eps + (1-2eps) * sigmoid(raw), 初期 raw=0 => ratio=0.5
+
+    Args:
+        num_groups: グループ数 (int) または reference tensor (その numel を使用)
+        init_ratio: 初期 threshold_ratio (default 0.5)
+        eps: 境界 eps (default 0.01)
+        device: device 指定。None なら CPU
+        zero_mask: zero reference グループを示す bool tensor。None なら全 False
+
+    Returns:
+        (raw_param, zero_mask) タプル。zero_mask 位置は固定 (gradient 無効化は呼び出し側で where)
+
+    Raises:
+        ValueError: 範囲外 / eps 不正
+    """
+    _require_torch()
+    if not (0 < eps < 0.5):
+        raise ValueError(f"eps must be in (0,0.5), got {eps}")
+    if not (eps < init_ratio < 1 - eps):
+        raise ValueError(f"init_ratio must be in ({eps}, {1 - eps}), got {init_ratio}")
+    if isinstance(num_groups, int):
+        n = num_groups
+        if n <= 0:
+            raise ValueError(f"num_groups must be >0, got {n}")
+        shape = (n,)
+        dev = torch.device(device) if device is not None else torch.device("cpu")  # type: ignore[union-attr]
+        zero = (
+            torch.zeros(shape, dtype=torch.bool, device=dev)
+            if zero_mask is None
+            else zero_mask.to(dtype=torch.bool, device=dev)
+        )  # type: ignore[union-attr]
+        # raw = logit((init - eps)/(1-2eps))
+        p = (init_ratio - eps) / (1 - 2 * eps)
+        raw_val = float(torch.log(torch.tensor(p / (1 - p))).item())  # type: ignore[union-attr]
+        raw = torch.full(shape, raw_val, dtype=torch.float32, device=dev)
+        raw_param = Parameter(raw)  # type: ignore[arg-type]
+        return raw_param, zero
+    else:
+        # tensor given: use its shape/device
+        t = num_groups.to(torch.float32)  # type: ignore[union-attr]
+        n = int(t.numel())
+        if n == 0:
+            raise ValueError("num_groups tensor must not be empty")
+        dev = t.device
+        shape = t.shape  # type: ignore[assignment]
+        if zero_mask is None:
+            zero = torch.zeros(shape, dtype=torch.bool, device=dev)  # type: ignore[arg-type]
+        else:
+            if zero_mask.shape != shape:
+                raise ValueError(f"zero_mask shape {tuple(zero_mask.shape)} != {tuple(shape)}")
+            zero = zero_mask.to(dtype=torch.bool, device=dev)  # type: ignore[union-attr]
+        p = (init_ratio - eps) / (1 - 2 * eps)
+        raw_val = float(torch.log(torch.tensor(p / (1 - p))).item())  # type: ignore[union-attr]
+        raw = torch.full(shape, raw_val, dtype=torch.float32, device=dev)
+        # zero positions set raw to 0 (masked later)
+        raw = torch.where(zero, torch.zeros_like(raw), raw)  # type: ignore[union-attr]
+        raw_param = Parameter(raw)  # type: ignore[arg-type]
+        return raw_param, zero
+
+
+def get_effective_threshold_ratio(
+    raw_param: torch.Tensor,  # type: ignore[type-arg]
+    eps: float = 0.01,
+) -> torch.Tensor:  # type: ignore[type-arg]
+    """有効 threshold_ratio = eps + (1-2eps) * sigmoid(raw) を取得.
+
+    Args:
+        raw_param: learnable raw_threshold tensor
+        eps: 境界 eps
+
+    Returns:
+        threshold_ratio tensor ∈ (eps, 1-eps)
+    """
+    _require_torch()
+    if not (0 < eps < 0.5):
+        raise ValueError(f"eps must be in (0,0.5), got {eps}")
+    if not torch.isfinite(raw_param).all().item():  # type: ignore[union-attr]
+        raise ValueError("NaN/Inf in raw_param")
+    sig = torch.sigmoid(raw_param.to(torch.float32))  # type: ignore[union-attr]
+    ratio = eps + (1 - 2 * eps) * sig
+    if not torch.isfinite(ratio).all().item():  # type: ignore[union-attr]
+        raise ValueError("NaN/Inf in threshold_ratio")
+    return ratio  # type: ignore[return-value]
+
+
 __all__ = [
     "build_scale_params",
     "get_effective_scales",
     "inverse_softplus",
+    "build_threshold_params",
+    "get_effective_threshold_ratio",
+    "inverse_sigmoid_threshold_ratio",
 ]

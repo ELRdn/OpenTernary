@@ -31,6 +31,8 @@ SMOKE_TEXTS: list[str] = [
     "Write a Python function add(a, b) that returns a + b. Reply with code only.",
 ]
 
+WIKITEXT_REVISION = "b08601e04326c79dfdd32d625aee71d232d685c3"
+
 
 def _hash_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -62,7 +64,7 @@ def load_synthetic_texts(num_samples: int) -> list[str]:
     return texts
 
 
-def load_wikitext_texts(num_samples: int, seed: int) -> list[str]:
+def load_wikitext_texts(num_samples: int, seed: int, revision: str = WIKITEXT_REVISION) -> list[str]:
     """Salesforce/wikitext wikitext-2-raw-v1 trainからテキストを読込む."""
     try:
         import datasets  # type: ignore[import]
@@ -70,7 +72,12 @@ def load_wikitext_texts(num_samples: int, seed: int) -> list[str]:
         raise ImportError("datasets is required for wiki-tiny. Install with: uv sync --extra calibration") from e
 
     try:
-        ds = datasets.load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="train")  # type: ignore[union-attr]
+        ds = datasets.load_dataset(
+            "Salesforce/wikitext",
+            "wikitext-2-raw-v1",
+            split="train",
+            revision=revision,
+        )  # type: ignore[union-attr]
     except Exception as e:
         raise RuntimeError(f"failed to load wikitext dataset: {e}") from e
 
@@ -102,6 +109,7 @@ def get_calibration_texts(
     num_samples: int,
     seed: int,
     allow_fallback: bool,
+    revision: str = WIKITEXT_REVISION,
 ) -> tuple[list[str], str, bool]:
     """dataset名からテキストを取得、fallback可否を考慮.
 
@@ -113,7 +121,7 @@ def get_calibration_texts(
 
     if requested == "wiki-tiny":
         try:
-            texts = load_wikitext_texts(num_samples, seed)
+            texts = load_wikitext_texts(num_samples, seed, revision)
             return texts, "wiki-tiny", False
         except (ImportError, RuntimeError, ValueError, OSError):
             if not allow_fallback:

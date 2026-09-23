@@ -56,3 +56,47 @@ def test_dump_yaml_roundtrip() -> None:
         cfg2 = load_config(config_path=pathlib.Path(f.name))
     assert cfg2.seed == 99
     pathlib.Path(f.name).unlink()
+
+
+def test_soft_to_hard_calibration_config_roundtrip(tmp_path: pathlib.Path) -> None:
+    config_path = tmp_path / "soft-to-hard.yaml"
+    config_path.write_text(
+        """calibration:
+  enabled: true
+  method: recon-soft-to-hard
+  temperature_schedule: cosine
+  temperature_start: 1.0
+  temperature_end: 0.05
+  hard_fraction: 0.1
+  zero_logit_bias: 0.25
+""",
+        encoding="utf-8",
+    )
+    cfg = load_config(config_path=config_path)
+    assert cfg.calibration.method == "recon-soft-to-hard"
+    assert cfg.calibration.temperature_schedule == "cosine"
+    assert cfg.calibration.temperature_start == 1.0
+    assert cfg.calibration.temperature_end == 0.05
+    assert cfg.calibration.hard_fraction == 0.1
+    assert cfg.calibration.zero_logit_bias == 0.25
+
+
+def test_soft_to_hard_rejects_threshold_optimizer_combination() -> None:
+    with pytest.raises(ValueError, match="threshold_enabled"):
+        load_config(
+            cli_overrides={
+                "calibration.method": "recon-soft-to-hard",
+                "calibration.threshold_enabled": True,
+            }
+        )
+
+
+def test_soft_to_hard_rejects_increasing_temperature() -> None:
+    with pytest.raises(ValueError, match="temperature_start"):
+        load_config(
+            cli_overrides={
+                "calibration.method": "recon-soft-to-hard",
+                "calibration.temperature_start": 0.05,
+                "calibration.temperature_end": 1.0,
+            }
+        )

@@ -75,6 +75,16 @@ def _validate_snapshot(snapshot: pathlib.Path) -> None:
     """snapshotに必要なファイルがあるか検証."""
     if not snapshot.is_dir():
         raise FileNotFoundError(f"Snapshot path is not a directory: {snapshot}")
+    from openternary.services.artifacts import MANIFEST, validate_artifact
+
+    if (snapshot / MANIFEST).is_file():
+        validate_artifact(snapshot)
+        return
+    if (snapshot / "model_index.json").is_file():
+        from openternary.adapters.registry import component_inventory
+
+        component_inventory(snapshot)
+        return
     # config.json と model.safetensors のいずれかの存在をチェック (safetensorsは複数形も許容)
     has_config = (snapshot / "config.json").exists()
     has_safetensors = (snapshot / "model.safetensors").exists() or any(snapshot.glob("*.safetensors"))
