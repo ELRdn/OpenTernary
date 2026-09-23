@@ -51,7 +51,7 @@ WSLの検証環境はCPU版Torch。WSLでのROCm試験は環境構成の対象�
 
 ### push後のCI修正
 
-最初の[GitHub CI実行](https://github.com/ELRdn/OpenTernary/actions/runs/35824126877)ではWindows/Linuxの実ライブラリwheel試験が通過した。一方、Torchなし環境の型推論、Windows cp1252でのヘルプ出力、ANSI装飾付きヘルプの文字列検査が失敗したため、bytes戻り値の明示・ヘルプ文言・装飾を除いた同一項目検査を修正した。cp1252の別process回帰テスト2件を追加した。2026-09-24のローカル最終結果は上記332件。今回の未push変更に対するGitHub CIはまだ存在しないため、ローカル結果と混同しない。
+最初の[GitHub CI実行](https://github.com/ELRdn/OpenTernary/actions/runs/35824126877)ではWindows/Linuxの実ライブラリwheel試験が通過した。一方、Torchなし環境の型推論、Windows cp1252でのヘルプ出力、ANSI装飾付きヘルプの文字列検査が失敗したため、bytes戻り値の明示・ヘルプ文言・装飾を除いた同一項目検査を修正した。cp1252の別process回帰テスト2件を追加した。2026-09-24のローカル最終結果は上記332件。修正を含むcommit `eb68da566658cb5abdc8dcfbf0771d889a67bf16` の[最終GitHub CI](https://github.com/ELRdn/OpenTernary/actions/runs/35881121188)は、Windows/Linuxのcore、ML fixture、実ライブラリwheel、pip fallbackの全10 jobが成功した。
 
 ## 見つかって修正した不具合
 
