@@ -82,7 +82,7 @@ def test_quality_runner_builds_comparable_summary_from_frozen_dataset(tmp_path) 
         "instruction_score": pytest.approx(100.0),
         "collapse_count": 0,
     }
-    assert report["report_schema_version"] == 2
+    assert report["report_schema_version"] == 3
     assert report["instructions"]["results"][0]["response_text"] == "青"
     assert report["instruction_data_audit"]["disjoint"] is True
     assert report["protocol"]["split"] == "validation"

@@ -1,5 +1,7 @@
 # OpenTernary Architecture
 
+> Historical design copy. The maintained architecture is [../ARCHITECTURE.md](../ARCHITECTURE.md); current CLI service boundaries are in [CLI.md](CLI.md).
+
 ## 1. Design Goal
 
 Keep three concerns independent:

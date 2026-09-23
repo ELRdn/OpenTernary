@@ -18,6 +18,7 @@ def to_metrics(
     suite_name = suite_info.get("name") if isinstance(suite_info, dict) else str(suite_info)
     return {
         "status": "completed",
+        "resources": runner_result.get("resources", {}),
         "run_id": run_id,
         "suite": suite_name,
         "suite_version": suite_info.get("version") if isinstance(suite_info, dict) else None,

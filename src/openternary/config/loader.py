@@ -42,7 +42,7 @@ def load_config(
     優先度: defaults < YAML < CLI overrides
     """
     # 1. defaults（Pydantic デフォルト）
-    merged: dict[str, Any] = AppConfig().model_dump()
+    merged: dict[str, Any] = {}
 
     # 2. YAML ファイル
     if config_path is not None:
@@ -66,6 +66,14 @@ def load_config(
             dotted = CLI_TO_CONFIG.get(k, k)
             _set_dotted(merged, dotted, v)
 
+    model_values = merged.get("model", {})
+    if (
+        isinstance(model_values, dict)
+        and "id" in model_values
+        and "revision" not in model_values
+        and model_values["id"] != AppConfig().model.id
+    ):
+        model_values["revision"] = None
     try:
         return AppConfig.model_validate(merged)
     except ValidationError as e:

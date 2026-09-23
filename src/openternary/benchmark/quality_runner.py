@@ -19,6 +19,8 @@ from openternary.benchmark.quality import (
     validate_text_splits,
 )
 from openternary.config.schema import AppConfig
+from openternary.services.identity import snapshot_identity
+from openternary.services.resources import measured, phase
 
 
 def _load_dataset(path: pathlib.Path) -> tuple[dict[str, Any], str, dict[str, Any]]:
@@ -86,6 +88,7 @@ def validate_quality_dataset(path: pathlib.Path | str) -> dict[str, Any]:
     }
 
 
+@measured
 def run_quality_benchmark(
     config: AppConfig,
     dataset_path: pathlib.Path | str,
@@ -104,11 +107,13 @@ def run_quality_benchmark(
     if (model is None) != (processor is None):
         raise ValueError("model and processor must be supplied together")
     payload, dataset_fingerprint, instruction_data_audit = _load_dataset(pathlib.Path(dataset_path))
+    from openternary.utils.seed import seed_everything
+
+    seed_everything(config.seed)
 
     resolved_snapshot: pathlib.Path | None = None
     if model is None:
-        from transformers import AutoModelForMultimodalLM, AutoProcessor
-
+        from openternary.adapters.runtime import load_model, load_processor
         from openternary.benchmark.runner import _dtype_to_torch_dtype, _resolve_device_map
         from openternary.utils.hf_cache import resolve_snapshot
 
@@ -118,21 +123,10 @@ def run_quality_benchmark(
             else resolve_snapshot(config.model.id, config.model.revision)
         )
         requested_dtype = _dtype_to_torch_dtype(config.dtype)
-        processor = AutoProcessor.from_pretrained(str(resolved_snapshot), trust_remote_code=False)
-        try:
-            model = AutoModelForMultimodalLM.from_pretrained(
-                str(resolved_snapshot),
-                dtype=requested_dtype,
-                device_map=_resolve_device_map(config.device),
-                trust_remote_code=False,
-            )
-        except TypeError:
-            model = AutoModelForMultimodalLM.from_pretrained(
-                str(resolved_snapshot),
-                torch_dtype=requested_dtype,
-                device_map=_resolve_device_map(config.device),
-                trust_remote_code=False,
-            )
+        device_map = _resolve_device_map(config.device)
+        phase("load", device_map.get("", "cpu") if isinstance(device_map, dict) else "cuda:0")
+        processor = load_processor(config, resolved_snapshot)
+        model = load_model(config, resolved_snapshot, requested_dtype, _resolve_device_map(config.device))
 
     assert model is not None and processor is not None
     model.eval()
@@ -153,6 +147,7 @@ def run_quality_benchmark(
     except StopIteration:
         pass
 
+    phase("inference", actual_device)
     splits = payload["splits"]
     tokenizer = getattr(processor, "tokenizer", None)
     if tokenizer is None and callable(processor):
@@ -203,14 +198,16 @@ def run_quality_benchmark(
         "stride": stride,
         "generation": generation_kwargs,
         "thinking": config.benchmark.thinking,
+        "seed": config.seed,
         "dtype": config.dtype,
-        "device": config.device,
+        "device": actual_device,
     }
     protocol_fingerprint = hashlib.sha256(
         json.dumps(protocol, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
     return {
-        "report_schema_version": 2,
+        "report_schema_version": 3,
+        "identity": snapshot_identity(resolved_snapshot),
         "protocol": protocol,
         "protocol_fingerprint": protocol_fingerprint,
         "dataset": payload["dataset"],

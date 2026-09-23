@@ -128,7 +128,7 @@ def test_cli_compare_missing_args_exit_2() -> None:
     assert result.exit_code == 2
 
 
-def test_compare_runs_applies_quality_gate_when_quality_reports_exist(tmp_path) -> None:
+def test_compare_runs_preserves_legacy_observations_without_acceptance(tmp_path) -> None:
     from openternary.experiment.compare import compare_runs
 
     baseline = tmp_path / "baseline"
@@ -172,14 +172,14 @@ def test_compare_runs_applies_quality_gate_when_quality_reports_exist(tmp_path) 
     assert result["quantized_protocol_fingerprint"] == "proto-v1"
     assert result["baseline_dataset_fingerprint"] == "data-v1"
     assert result["quantized_dataset_fingerprint"] == "data-v1"
-    assert result["quality_gate"]["accepted"] is True
-    assert result["quality_gate"]["protocol_version"] == "balanced-quality-gate-v1"
+    assert result["quality_gate"]["accepted"] is False
+    assert result["quality_gate"]["status"] == "insufficient_evidence"
 
     output = tmp_path / "comparison"
     cli_result = runner.invoke(app, ["compare", str(baseline), str(candidate), "--output", str(output)])
     assert cli_result.exit_code == 0, cli_result.output
     acceptance = json.loads((output / "acceptance.json").read_text(encoding="utf-8"))
-    assert acceptance["accepted"] is True
+    assert acceptance["accepted"] is False
 
 
 def test_compare_runs_rejects_mismatched_quality_protocol_or_data(tmp_path) -> None:

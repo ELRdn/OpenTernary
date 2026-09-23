@@ -1,5 +1,7 @@
 # OpenTernary
 
+> Historical design copy. The maintained project overview is [../README.md](../README.md), the current CLI guide is [CLI.md](CLI.md), and implementation evidence is [CLI_IMPLEMENTATION_STATUS.md](CLI_IMPLEMENTATION_STATUS.md). Examples and status below may predate the current CLI.
+
 > Open-source tooling for researching, calibrating, benchmarking, and eventually deploying ternary LLMs.
 
 **OpenTernary** is an experimental CLI-first project for exploring how existing open-weight language models can be converted toward ternary weights such as `{-1, 0, +1}` while retaining as much model quality as possible.

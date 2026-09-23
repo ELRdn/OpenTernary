@@ -9,10 +9,9 @@ import pathlib
 from typing import Any
 
 from openternary import __version__
-from openternary.adapters.gemma4 import get_adapter
+from openternary.adapters.registry import select_adapter
 from openternary.config.schema import AppConfig
 from openternary.utils.hf_cache import resolve_snapshot
-from openternary.utils.safetensors_header import parse_safetensors_header
 
 _DTYPE_NBYTES: dict[str, int] = {
     "F32": 4,
@@ -53,8 +52,9 @@ def _load_config_json(snapshot: pathlib.Path) -> dict[str, Any]:
 
 def _collect_tensors(snapshot: pathlib.Path) -> list[dict[str, Any]]:
     """headerからtensor一覧を収集 (payload非ロード)."""
-    safetensors_path = _find_safetensors_file(snapshot)
-    header = parse_safetensors_header(safetensors_path)
+    from openternary.services.snapshot import tensor_inventory
+
+    header = tensor_inventory(snapshot)
     items: list[dict[str, Any]] = []
     for name in sorted(header.keys()):
         info = header[name]
@@ -83,7 +83,7 @@ def _build_fingerprint_payload(
     """Phase 1と同一のfingerprint対象payloadを構築（Phase 2でも不変）."""
     return {
         "version": 1,
-        "model": {"id": config.model.id, "revision": config.model.revision, "adapter": "gemma4"},
+        "model": {"id": config.model.id, "revision": config.model.revision, "adapter": arch.get("adapter", "gemma4")},
         "architecture": arch,
         "quantization_policy": {
             "target": {"attention": config.quantization.target.attention, "mlp": config.quantization.target.mlp},
@@ -95,7 +95,7 @@ def _build_fingerprint_payload(
         "dtype_report": dtype_report,
         "memory_estimate": memory_estimate,
         "warnings": warnings,
-        "adapter_version": f"{__version__}.gemma4.v1",
+        "adapter_version": f"{__version__}.{arch.get('adapter', 'gemma4')}.v1",
     }
 
 
@@ -117,29 +117,35 @@ def run_inspection(
     else:
         snapshot_path = pathlib.Path(snapshot_path)
 
-    raw_config = _load_config_json(snapshot_path)
-    # get_adapterは通常HF IDを想定するが、CLIでローカルpathをmodel.idに上書きした場合は
-    # config.jsonのmodel_typeからfallbackする (cache-only UXのため)
-    try:
-        adapter = get_adapter(
-            config.model.id,
-            target_attention=config.quantization.target.attention,
-            target_mlp=config.quantization.target.mlp,
-        )
-    except ValueError:
-        # snapshotのconfigから推定 — gemma4ならGemma4Adapter
-        mt = str(raw_config.get("model_type", "")).lower()
-        archs = raw_config.get("architectures", [])
-        arch_str = " ".join(str(x).lower() for x in archs) if isinstance(archs, list) else ""
-        if "gemma" in mt or "gemma" in arch_str or "gemma4" in mt:
-            from openternary.adapters.gemma4 import Gemma4Adapter
+    if (snapshot_path / "model_index.json").is_file():
+        from openternary.adapters.registry import component_inventory, resolve_component
 
-            adapter = Gemma4Adapter(
-                target_attention=config.quantization.target.attention,
-                target_mlp=config.quantization.target.mlp,
-            )
+        if config.model.component:
+            snapshot_path = resolve_component(snapshot_path, config)
         else:
-            raise
+            if load_weights:
+                raise ValueError("pipeline weight inspection requires an explicit model.component")
+            components = component_inventory(snapshot_path)
+            reports = {}
+            for component in components:
+                folder = snapshot_path / component["name"]
+                if (folder / "config.json").is_file() and any(folder.glob("*.safetensors")):
+                    child = config.model_copy(deep=True)
+                    child.model.id = str(folder)
+                    child.model.component = None
+                    reports[component["name"]] = run_inspection(child, folder)
+            payload = {
+                "version": 1,
+                "model": {"id": config.model.id, "adapter": "diffusers"},
+                "architecture": {"adapter": "diffusers", "architecture": "pipeline"},
+                "components": components,
+                "component_inspections": reports,
+                "summary": {"total_tensors": sum(r["summary"]["total_tensors"] for r in reports.values())},
+                "pipeline_conversion": "unverified",
+            }
+            return {**payload, "inspection_fingerprint": _compute_fingerprint(payload)}
+    raw_config = _load_config_json(snapshot_path)
+    adapter = select_adapter(config, snapshot_path)
     arch = adapter.architecture_info(raw_config)
 
     raw_tensors = _collect_tensors(snapshot_path)
@@ -228,10 +234,23 @@ def run_inspection(
     # Phase 2 ternary estimator — fingerprint対象外（別hash）
     from openternary.quant.accounting import estimate_whole_model
 
-    ternary_estimate = estimate_whole_model(classified, scale_dtype="fp32")
+    num_scales = None
+    if config.quantization.scale_granularity == "per_group":
+        # Header-only accounting must not import the torch-based grouping module.
+        import math
+
+        group = config.quantization.group_size
+        num_scales = sum(
+            math.prod(item["shape"][:-1]) * ((item["shape"][-1] + group - 1) // group)
+            for item in classified
+            if item["quantizable"] and item["shape"]
+        )
+    ternary_estimate = estimate_whole_model(classified, scale_dtype="fp32", num_scales=num_scales)
+    scheme = f"absmean-{config.quantization.scale_granularity.replace('_', '-')}"
+    ternary_estimate["scheme"] = scheme
     ternary_estimator: dict[str, Any] = {
         "version": "1",
-        "scheme": "absmean-per-tensor",
+        "scheme": scheme,
         "packing": "2bit-v1",
         "scale_dtype": "fp32",
         "estimate": ternary_estimate,

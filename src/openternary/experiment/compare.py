@@ -13,9 +13,12 @@ def _load_json(path: pathlib.Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
     try:
-        return json.loads(path.read_text(encoding="utf-8"))  # type: ignore[no-any-return]
-    except Exception:
-        return None
+        result = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid report JSON: {path}") from exc
+    if not isinstance(result, dict):
+        raise ValueError(f"report must be a JSON object: {path}")
+    return result
 
 
 def _find_benchmark_json(run_dir: pathlib.Path) -> dict[str, Any] | None:
@@ -64,8 +67,8 @@ def _validate_quality_report(report: dict[str, Any], *, label: str) -> dict[str,
     schema_version = report.get("report_schema_version")
     if schema_version is None:
         return None
-    if schema_version != 2:
-        raise ValueError(f"{label} quality report schema must be 2")
+    if schema_version not in {2, 3}:
+        raise ValueError(f"{label} quality report schema must be 2 or 3")
 
     protocol = report.get("protocol")
     protocol_fingerprint = report.get("protocol_fingerprint")
@@ -83,7 +86,7 @@ def _validate_quality_report(report: dict[str, Any], *, label: str) -> dict[str,
         raise ValueError(f"{label} quality protocol_fingerprint does not match protocol")
 
     model = report.get("model")
-    required_model_fields = ("revision", "actual_dtype", "actual_device")
+    required_model_fields = (("revision",) if schema_version == 2 else ()) + ("actual_dtype", "actual_device")
     if not isinstance(model, dict) or any(
         not isinstance(model.get(key), str) or not model[key] for key in required_model_fields
     ):
@@ -208,7 +211,26 @@ def _validate_quality_report(report: dict[str, Any], *, label: str) -> dict[str,
         ):
             raise ValueError(f"{label} quality instruction_score mismatch")
 
-    return {key: str(model[key]) for key in required_model_fields}
+    if schema_version == 3:
+        identity = report.get("identity")
+        environment = report.get("measurement_environment")
+        if not isinstance(identity, dict) or not isinstance(environment, dict):
+            raise ValueError(f"{label} schema 3 requires identity and measurement_environment")
+        if identity.get("status") == "resolved":
+            fingerprint = identity.get("source_fingerprint")
+            if not isinstance(fingerprint, str) or len(fingerprint) != 64:
+                raise ValueError(f"{label} invalid source fingerprint")
+            interface = identity.get("interface_files")
+            if not isinstance(interface, dict):
+                raise ValueError(f"{label} invalid interface inventory")
+            from openternary.services.artifacts import canonical_hash
+
+            expected = canonical_hash(interface) if interface else None
+            if identity.get("interface_fingerprint") != expected:
+                raise ValueError(f"{label} interface fingerprint mismatch")
+        if environment.get("actual_device") != model["actual_device"]:
+            raise ValueError(f"{label} measurement device mismatch")
+    return {key: str(model.get(key)) for key in ("revision", "actual_dtype", "actual_device")}
 
 
 def compare_runs(
@@ -226,6 +248,8 @@ def compare_runs(
     """
     b_dir = pathlib.Path(baseline_dir)
     q_dir = pathlib.Path(quantized_dir)
+    if not b_dir.exists() or not q_dir.exists():
+        raise ValueError("comparison inputs must exist")
 
     b_bench = _find_benchmark_json(b_dir)
     q_bench = _find_benchmark_json(q_dir)
@@ -234,6 +258,20 @@ def compare_runs(
     q_quant = _find_quantization_json(q_dir)
     b_quality = _find_quality_json(b_dir)
     q_quality = _find_quality_json(q_dir)
+    if not any((b_bench, b_quant, b_quality)) or not any((q_bench, q_quant, q_quality)):
+        raise ValueError("each comparison input must contain a non-empty benchmark, quantization or quality report")
+    for label, report in (("baseline", b_bench), ("candidate", q_bench)):
+        if report is not None:
+            rows = report.get("results")
+            if not isinstance(report.get("suite"), dict) or not isinstance(rows, list) or not rows:
+                raise ValueError(f"{label} benchmark requires suite and non-empty results")
+            ids = [row.get("id") for row in rows if isinstance(row, dict)]
+            if (
+                len(ids) != len(rows)
+                or any(not isinstance(key, str) or not key for key in ids)
+                or len(set(ids)) != len(ids)
+            ):
+                raise ValueError(f"{label} benchmark requires unique result IDs")
 
     quality_gate: dict[str, Any] | None = None
     quality_protocol_match: bool | None = None
@@ -253,12 +291,16 @@ def compare_runs(
         q_model = _validate_quality_report(q_quality, label="candidate")
         if (b_model is None) != (q_model is None):
             raise ValueError("quality report schema mismatch")
-        quality_report_schema_match = True if b_model is not None else None
+        quality_report_schema_match = (
+            (b_quality.get("report_schema_version") == q_quality.get("report_schema_version"))
+            if b_model is not None
+            else None
+        )
         if b_model is not None and q_model is not None:
             model_revision_match = b_model["revision"] == q_model["revision"]
             actual_dtype_match = b_model["actual_dtype"] == q_model["actual_dtype"]
             actual_device_match = b_model["actual_device"] == q_model["actual_device"]
-            if not model_revision_match:
+            if not model_revision_match and b_quality.get("report_schema_version") == 2:
                 raise ValueError("quality model revision mismatch")
             if not actual_dtype_match:
                 raise ValueError("quality actual dtype mismatch")
@@ -284,7 +326,28 @@ def compare_runs(
             raise ValueError("quality dataset fingerprint mismatch")
         from openternary.benchmark.acceptance import compare_quality_metrics
 
-        quality_gate = compare_quality_metrics(b_summary, q_summary)
+        identity_eligible = False
+        if b_quality.get("report_schema_version") == q_quality.get("report_schema_version") == 3:
+            b_identity, q_identity = b_quality["identity"], q_quality["identity"]
+            if b_identity.get("status") == q_identity.get("status") == "resolved":
+                for key in ("source_fingerprint", "interface_fingerprint"):
+                    if b_identity.get(key) != q_identity.get(key):
+                        raise ValueError(f"quality {key} mismatch")
+                if b_quality["measurement_environment"] != q_quality["measurement_environment"]:
+                    raise ValueError("quality measurement environment mismatch")
+                identity_eligible = (
+                    bool(b_identity.get("interface_fingerprint"))
+                    and b_identity.get("scope") == q_identity.get("scope") == "model"
+                )
+        quality_gate = (
+            compare_quality_metrics(b_summary, q_summary)
+            if identity_eligible
+            else {
+                "accepted": False,
+                "status": "insufficient_evidence",
+                "reason": "schema 3 with matched source/interface/runtime and non-synthetic model evidence required",
+            }
+        )
 
     # Protocol comparison
     protocol_match: bool | None = None
@@ -296,6 +359,19 @@ def compare_runs(
         q_proto = q_bench.get("suite", {}).get("fingerprint") if isinstance(q_bench.get("suite"), dict) else None
         if b_proto and q_proto:
             protocol_match = b_proto == q_proto
+            if b_bench.get("identity") or q_bench.get("identity"):
+                b_identity, q_identity = b_bench.get("identity", {}), q_bench.get("identity", {})
+                protocol_match = (
+                    protocol_match
+                    and all(
+                        b_identity.get(key) is not None and b_identity.get(key) == q_identity.get(key)
+                        for key in ("source_fingerprint", "interface_fingerprint")
+                    )
+                    and b_bench.get("measurement_environment") == q_bench.get("measurement_environment")
+                    and b_bench.get("dtype") == q_bench.get("dtype")
+                    and b_bench.get("seed") == q_bench.get("seed")
+                    and b_bench.get("warmup") == q_bench.get("warmup")
+                )
         # result
         b_res = b_bench.get("result_fingerprint")
         q_res = q_bench.get("result_fingerprint")

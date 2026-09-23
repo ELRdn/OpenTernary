@@ -6,9 +6,16 @@ FR-06 の再現性要件に準拠: すべての実験定義定数はコードに
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel as PydanticBaseModel
+from pydantic import ConfigDict, Field, model_validator
+
+
+class BaseModel(PydanticBaseModel):
+    """Never silently discard experiment-defining settings."""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
 class ModelConfig(BaseModel):
@@ -22,6 +29,31 @@ class ModelConfig(BaseModel):
         default="6befbaca7398925921802abd1f277b495b78b738",
         description="Model revision / commit hash",
     )
+    adapter: Literal["auto", "gemma4", "transformers", "diffusers"] = "auto"
+    component: str | None = None
+
+
+class PassConfig(BaseModel):
+    name: str = Field(min_length=1)
+    options: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_options(self) -> PassConfig:
+        if self.name == "noop" and self.options:
+            raise ValueError("noop accepts no options")
+        if self.name == "clip":
+            import math
+
+            value = self.options.get("max_abs")
+            if (
+                set(self.options) != {"max_abs"}
+                or not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not math.isfinite(value)
+                or value <= 0
+            ):
+                raise ValueError("clip requires only finite max_abs > 0")
+        return self
 
 
 class QuantizationTargetConfig(BaseModel):
@@ -34,8 +66,15 @@ class QuantizationTargetConfig(BaseModel):
 class QuantizationConfig(BaseModel):
     """量子化設定."""
 
-    method: Literal["naive"] = "naive"
-    codebook: list[int] = Field(default_factory=lambda: [-1, 0, 1])
+    method: Literal["naive"] | None = "naive"
+    backend: str = "ternary"
+    scheme: str = "absmean"
+    weight_dtype: str = "ternary"
+    activation_dtype: Literal["preserve"] = "preserve"
+    backend_options: dict[str, str | int | float | bool] = Field(default_factory=dict)
+    passes: list[PassConfig] = Field(default_factory=list)
+    mixed_precision: dict[str, Literal["preserve", "ternary"]] = Field(default_factory=dict)
+    codebook: list[int] | None = Field(default_factory=lambda: [-1, 0, 1])
     group_size: int = Field(default=128, ge=1, description="Group size for group-wise scaling")
     scale_granularity: Literal["per_tensor", "per_group"] = Field(
         default="per_tensor", description="Scale granularity: per_tensor (Phase2 canonical) or per_group (LD-RW)"
@@ -44,6 +83,18 @@ class QuantizationConfig(BaseModel):
         default="last-dim-rowwise-v1", description="Grouping axis definition for per_group"
     )
     target: QuantizationTargetConfig = Field(default_factory=QuantizationTargetConfig)
+
+    @model_validator(mode="after")
+    def validate_codebook(self) -> QuantizationConfig:
+        if self.backend != "ternary":
+            for key in ("method", "codebook"):
+                if key in self.model_fields_set and getattr(self, key) is not None:
+                    raise ValueError(f"legacy quantization.{key} applies to ternary only")
+                setattr(self, key, None)
+            return self
+        if self.method != "naive" or self.codebook != [-1, 0, 1]:
+            raise ValueError("only codebook [-1, 0, 1] is supported")
+        return self
 
 
 class VramConfig(BaseModel):
@@ -95,7 +146,7 @@ class CalibrationConfig(BaseModel):
     lr: float = Field(default=1e-3, gt=0, description="学習率")
     # Phase 4.2 threshold fields (後方互換: デフォルト無効で 4.1 と同一)
     threshold_enabled: bool = Field(default=False, description="閾値学習を有効化するか（Phase 4.2）")
-    threshold_lr: float | None = Field(default=None, description="閾値用学習率（None なら lr を流用）")
+    threshold_lr: float | None = Field(default=None, gt=0, description="閾値用学習率（None なら lr を流用）")
     threshold_init_ratio: float = Field(default=0.5, gt=0.0, lt=1.0, description="閾値初期 ratio（0,1）")
     threshold_granularity: Literal["per_tensor", "per_group"] = Field(
         default="per_group", description="閾値粒度（Phase 4.2 は per_group 推奨）"
@@ -130,6 +181,8 @@ class CalibrationConfig(BaseModel):
     @model_validator(mode="after")
     def validate_assignment_method(self) -> CalibrationConfig:
         """Reject ambiguous or non-annealing assignment configurations."""
+        if (self.method == "recon-threshold") != self.threshold_enabled:
+            raise ValueError("recon-threshold requires threshold_enabled=true; other methods require false")
         if self.method == "recon-soft-to-hard":
             if self.threshold_enabled:
                 raise ValueError("recon-soft-to-hard requires threshold_enabled=false")
@@ -156,10 +209,17 @@ class BenchmarkConfig(BaseModel):
     generation: GenerationConfig = Field(default_factory=GenerationConfig)
     warmup: bool = Field(default=True, description="run one warmup prompt before timing")
 
+    @model_validator(mode="after")
+    def validate_legacy_suites(self) -> BenchmarkConfig:
+        if self.suites != [self.suite]:
+            raise ValueError("benchmark.suites is deprecated and must agree with benchmark.suite")
+        return self
+
 
 class AppConfig(BaseModel):
     """アプリケーション全体設定. CLI フラグと YAML の統合結果."""
 
+    schema_version: Literal[1] = 1
     model: ModelConfig = Field(default_factory=ModelConfig)
     quantization: QuantizationConfig = Field(default_factory=QuantizationConfig)
     calibration: CalibrationConfig = Field(default_factory=CalibrationConfig)

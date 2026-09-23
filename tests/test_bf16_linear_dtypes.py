@@ -1,7 +1,9 @@
 """BF16 F.linear operand dtype一致テスト — Phase 4.2-G 実機バグ再現."""
-import torch
-import torch.nn.functional as F
+
 import pytest
+
+torch = pytest.importorskip("torch")
+import torch.nn.functional as F  # noqa: E402
 
 
 def test_bf16_linear_both_operands_bf16():
@@ -29,7 +31,8 @@ def test_fp32_fallback_both_fp32():
 def test_bf16_path_in_runner_uses_same_dtype():
     """runner.py の該当行が両方 BF16かチェック (静的)."""
     import pathlib
-    p = pathlib.Path("src/openternary/calibration/runner.py")
+
+    p = pathlib.Path(__file__).resolve().parents[1] / "src/openternary/calibration/runner.py"
     text = p.read_text(encoding="utf-8")
     # 修正後は y_hat = F.linear(inp_dev.to(torch.bfloat16), w_hat.to(torch.bfloat16))
     assert "w_hat.to(torch.bfloat16).to(torch.float32)" not in text, "BF16→FP32 混在バグが残っている"
@@ -41,6 +44,7 @@ def test_bf16_path_in_runner_uses_same_dtype():
 def test_threshold_gradient_reaches_raw_params():
     """BF16 forwardでも raw_scale/raw_threshold まで勾配が届く."""
     from openternary.quant.threshold import ste_threshold_codes
+
     # ダミー weight と scale/threshold
     torch.manual_seed(0)
     w = torch.randn(8, 16, requires_grad=False)
@@ -70,6 +74,7 @@ def test_threshold_gradient_reaches_raw_params():
     # codes2 は thr2 に依存 (STEで graphあり)
     # get_effective_threshold_ratio 経由でも raw_thr が graph に入る
     from openternary.calibration.optimizer import get_effective_threshold_ratio
+
     thr_eff = get_effective_threshold_ratio(raw_thr2)
     assert thr_eff.requires_grad
     # NaN/Inf なし

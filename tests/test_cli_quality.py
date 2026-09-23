@@ -42,7 +42,7 @@ def test_cli_quality_dry_run_validates_dataset_before_claiming_success(tmp_path)
 def test_cli_quality_writes_self_contained_quality_artifact(tmp_path, monkeypatch) -> None:
     snapshot = tmp_path / "snapshot"
     snapshot.mkdir()
-    (snapshot / "config.json").write_text("{}", encoding="utf-8")
+    (snapshot / "config.json").write_text('{"model_type": "gemma4"}', encoding="utf-8")
     (snapshot / "model.safetensors").write_bytes(b"fixture")
     dataset = tmp_path / "quality.json"
     dataset.write_text(

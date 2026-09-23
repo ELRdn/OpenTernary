@@ -140,7 +140,9 @@ def test_convert_snapshot_per_group_rowwise() -> None:
         # grouped overhead should be total_groups *32
         est = qj["packed_estimate"]
         assert est["grouped_scale_overhead_bits"] == 32 * 32
-        assert est["scale_overhead_bits"] == 2 * 32  # per_tensor overhead
+        assert est["per_tensor_scale_overhead_bits"] == 2 * 32
+        assert est["scale_overhead_bits"] == 32 * 32
+        assert est["estimated_total_bits"] == est["packed_weight_bits"] + 32 * 32 + est["excluded_original_bits"]
         # per_tensor entries should have num_groups =16 each for quantizable
         for e in qj["per_tensor"]:
             if e["quantizable"]:

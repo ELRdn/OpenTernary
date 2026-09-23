@@ -9,6 +9,7 @@ import hashlib
 import json
 import pathlib
 import typing
+from typing import Any
 
 try:
     import torch
@@ -549,3 +550,12 @@ def run_synthetic_tiny(
         "calibration_json": str(out / "calibration.json"),
         "loss_history": loss_history,
     }
+
+
+def run_synthetic_fixture(app_config: Any, teacher_snapshot: None, output_dir: Any, **kwargs: Any) -> dict[str, Any]:
+    """Test-only entry; never exposed by the CLI or production service."""
+    from openternary.calibration.runner import _run_calibration_impl
+
+    if teacher_snapshot is not None or app_config.calibration.dataset != "synthetic":
+        raise ValueError("synthetic fixture requires no teacher and dataset=synthetic")
+    return _run_calibration_impl(app_config, None, output_dir, **kwargs)

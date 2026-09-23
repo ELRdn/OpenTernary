@@ -582,6 +582,32 @@ def run_calibration(
     materialize_only: bool = False,
     init_from: pathlib.Path | str | None = None,
 ) -> dict[str, typing.Any]:
+    """Run real calibration only; missing models cannot become successful simulations."""
+    if teacher_snapshot is None or not (pathlib.Path(teacher_snapshot) / "config.json").is_file():
+        raise FileNotFoundError(f"teacher snapshot missing: {teacher_snapshot}")
+    if not app_config.calibration.enabled:
+        raise ValueError("calibration.enabled must be true")
+    if not app_config.runtime.low_vram:
+        raise ValueError("calibration currently requires runtime.low_vram=true")
+    from openternary.experiment.run import run_lock
+
+    out = pathlib.Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    with run_lock(out):
+        return _run_calibration_impl(
+            app_config, teacher_snapshot, out, resume, resume_from, materialize_only, init_from
+        )
+
+
+def _run_calibration_impl(
+    app_config: typing.Any,
+    teacher_snapshot: pathlib.Path | str | None,
+    output_dir: pathlib.Path | str,
+    resume: bool = False,
+    resume_from: pathlib.Path | str | None = None,
+    materialize_only: bool = False,
+    init_from: pathlib.Path | str | None = None,
+) -> dict[str, typing.Any]:
     """Layer-local calibration runner — Phase 4.2 with warm start.
 
     - Captures teacher activations to disk (or reuses if fingerprint matches)
@@ -667,7 +693,7 @@ def run_calibration(
             bf16_supported=False,
         )
     elif _pref == "cuda" and backend_info.backend == "cpu":
-        print("[device] warning: device=cuda requested but no GPU available, falling back to cpu", flush=True)
+        raise ValueError("device=cuda requested but no GPU available")
     # Observability: always log backend
     print(f"[device] backend={backend_info.backend}", flush=True)
     print(f"[device] {backend_info.device_name}", flush=True)

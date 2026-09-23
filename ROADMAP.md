@@ -2,6 +2,8 @@
 
 This roadmap prioritizes **research validity and a stable CLI pipeline** over GUI work.
 
+> **CLI product track:** [CLI Product Roadmap](CLI_ROADMAP.md) separately defines CLI-0–CLI-8 for reliability, shared contracts, backend/model integration, export, evaluation, and automation. Its milestones do not replace the research quality gates below.
+
 > **Progress snapshot — 2026-08-23 (Phase 4.1 CLOSED, Phase 4.2 IN_PROGRESS)**
 > - **Phase 0 — Repository Foundation: ✅ COMPLETE**
 > - **Phase 1a — Gemma 4 E2B Inspection: ✅ COMPLETE** — 1951 tensors / 5,104,298,467 params / 205 quantizable (0.359605) / BF16 9.5075 GB / text 35 layers hidden 1536 vocab 262144, fingerprint `sha256:07fe44eae504218937187b75826a4c780cba2f76a9145fdc38f7efdd4d3a7b01` stable.

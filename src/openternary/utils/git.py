@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import pathlib
 import subprocess
+from typing import Any
 
 
 def get_git_commit(cwd: pathlib.Path | None = None) -> str:
@@ -38,3 +40,27 @@ def get_git_branch(cwd: pathlib.Path | None = None) -> str:
     except Exception:
         pass
     return "unknown"
+
+
+def code_provenance() -> dict[str, Any]:
+    """Hash only this package's code, independent of the invocation directory."""
+    package = pathlib.Path(__file__).resolve().parents[1]
+    root = package.parent.parent
+    files = {
+        p.relative_to(package).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+        for p in sorted(package.rglob("*.py"))
+    }
+    dirty: bool | None = None
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain", "--", "src/openternary", "pyproject.toml", "uv.lock"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            dirty = bool(result.stdout.strip())
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return {"commit": get_git_commit(root), "dirty": dirty, "package_files": files}

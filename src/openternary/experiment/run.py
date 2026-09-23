@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import contextlib
 import datetime
 import pathlib
 import re
 import uuid
+from collections.abc import Iterator
+from contextvars import ContextVar
 
 from filelock import FileLock
 
 from openternary.config.loader import dump_config_yaml
 from openternary.config.schema import AppConfig
 from openternary.experiment.metadata import collect_environment, write_json
+
+_HELD: ContextVar[frozenset[str]] = ContextVar("held_runs", default=frozenset())
 
 
 def _slug_from_config(config: AppConfig) -> str:
@@ -40,38 +45,26 @@ def create_run(
 
     Returns: (run_dir, run_id)
     """
-    base = pathlib.Path(base_dir)
-    base.mkdir(parents=True, exist_ok=True)
-
-    if config.output:
-        # output が指定されていればそれを優先（絶対/相対両対応）
-        run_dir = pathlib.Path(config.output)
-        # 衝突時は連番サフィックス
-        original = run_dir
-        counter = 1
-        while run_dir.exists():
-            run_dir = pathlib.Path(f"{original}-{counter:03d}")
-            counter += 1
-    else:
-        name = _run_dir_name(config)
-        run_dir = base / name
-        counter = 1
-        original = run_dir
-        while run_dir.exists():
-            run_dir = pathlib.Path(f"{original}-{counter:03d}")
-            counter += 1
-
+    base = pathlib.Path(base_dir).resolve()
+    original = (pathlib.Path(config.output) if config.output else base / _run_dir_name(config)).resolve()
+    original.parent.mkdir(parents=True, exist_ok=True)
     run_id = run_id or uuid.uuid4().hex[:8]
-
-    # filelock で並行安全に作成
-    lock_path = base / ".run.lock"
+    # Same destination uses the same lock across cwd, aliases and explicit/base outputs.
+    lock_path = original.parent / ".run.lock"
     with FileLock(str(lock_path)):
-        run_dir.mkdir(parents=True, exist_ok=True)
-        # 再チェック（ロック内で衝突が解決された場合）
-        if run_dir.exists() and any(run_dir.iterdir()):
-            # 既に別プロセスが作った場合は連番へ
-            pass
+        run_dir = original
+        counter = 1
+        while True:
+            try:
+                run_dir.mkdir(exist_ok=False)
+                break
+            except FileExistsError:
+                run_dir = original.with_name(f"{original.name}-{counter:03d}")
+                counter += 1
 
+        from openternary.services.reporting import track_run
+
+        track_run(run_dir, run_id)
         # logs / artifacts ディレクトリ
         (run_dir / "logs").mkdir(parents=True, exist_ok=True)
         (run_dir / "artifacts").mkdir(parents=True, exist_ok=True)
@@ -93,3 +86,26 @@ def create_run(
         write_json(run_dir / "metrics.json", {"status": "not_run", "run_id": run_id})
 
     return run_dir, run_id
+
+
+@contextlib.contextmanager
+def run_lock(run_dir: str | pathlib.Path) -> Iterator[None]:
+    """Exclusive, process-scoped ownership of execution/resume/finalization."""
+    from filelock import Timeout
+
+    root = pathlib.Path(run_dir).resolve()
+    if not root.is_dir():
+        raise FileNotFoundError(f"run directory not found: {root}")
+    key = str(root)
+    if key in _HELD.get():
+        yield
+        return
+    try:
+        with FileLock(str(root / ".execution.lock"), timeout=0):
+            token = _HELD.set(_HELD.get() | {key})
+            try:
+                yield
+            finally:
+                _HELD.reset(token)
+    except Timeout as exc:
+        raise ValueError(f"run is already in use: {root}") from exc

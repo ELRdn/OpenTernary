@@ -6,13 +6,13 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from openternary.calibration.optimizer import (
+from openternary.calibration.optimizer import (  # noqa: E402
     build_threshold_params,
     get_effective_threshold_ratio,
 )
-from openternary.quant.grouping import dequantize_groupwise, quantize_groupwise
-from openternary.quant.ternary import quantize_absmean
-from openternary.quant.threshold import hard_threshold_codes, ste_threshold_codes
+from openternary.quant.grouping import quantize_groupwise  # noqa: E402
+from openternary.quant.ternary import quantize_absmean  # noqa: E402
+from openternary.quant.threshold import hard_threshold_codes, ste_threshold_codes  # noqa: E402
 
 
 def test_threshold_parameterization_bounds() -> None:

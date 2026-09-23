@@ -1,5 +1,7 @@
 # OpenTernary Roadmap
 
+> Historical roadmap copy. Research progress is maintained in [../ROADMAP.md](../ROADMAP.md); CLI product work is maintained in [../CLI_ROADMAP.md](../CLI_ROADMAP.md).
+
 This roadmap prioritizes **research validity and a stable CLI pipeline** over GUI work.
 
 > **Progress snapshot — 2026-08-23 (Phase 4.1 CLOSED, Phase 4.2 IN_PROGRESS)**

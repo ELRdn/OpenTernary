@@ -1,7 +1,9 @@
 """Mocked real ROCm GPU で BF16 pathを検証 — dtype不一致が再発しないこと."""
-import torch
-import torch.nn.functional as F
-from unittest.mock import patch
+
+import pytest
+
+torch = pytest.importorskip("torch")
+import torch.nn.functional as F  # noqa: E402
 
 
 def _run_one_step_with_bf16(mock_bf16_fail=False):
@@ -11,9 +13,11 @@ def _run_one_step_with_bf16(mock_bf16_fail=False):
     # w_hat は learnable scale を含む想定で requires_grad True
     w_hat_fp32 = torch.randn(8, 16, requires_grad=True)
     w_hat_bf16 = w_hat_fp32.to(torch.bfloat16)
+    assert w_hat_bf16.dtype == torch.bfloat16
     # BF16 tensor は autograd でも grad が流れる (BF16でも requires_grad は保持)
     # ただし to() で dtype 変換すると grad_fn が残るようにする
     w_hat_bf16 = w_hat_fp32.to(torch.bfloat16)
+    assert w_hat_bf16.dtype == torch.bfloat16
     # w_hat_bf16 は w_hat_fp32 の view ではないので、別途 requires_grad を持つようにする
     # 簡易: w_hat_fp32 を直接使う
     inp_fp32 = inp.to(torch.float32)
@@ -69,6 +73,3 @@ def test_runner_bf16_path_with_mocked_cuda_available():
     # 混在はエラー
     with pytest.raises(RuntimeError):
         F.linear(inp_bf16, w_bf16.to(torch.float32))
-
-
-import pytest

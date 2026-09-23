@@ -82,7 +82,7 @@ def test_calibrate_dry_run_no_filesystem() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def test_calibrate_dry_run_wiki_no_fallback_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_calibrate_dry_run_does_not_probe_dataset(monkeypatch: pytest.MonkeyPatch) -> None:
     import shutil
     import sys
     import uuid
@@ -106,8 +106,8 @@ def test_calibrate_dry_run_wiki_no_fallback_fails(monkeypatch: pytest.MonkeyPatc
             "calibration:\n  enabled: true\n  dataset: wiki-tiny\n  allow_dataset_fallback: false\n", encoding="utf-8"
         )
         result = runner.invoke(app, ["calibrate", "--config", str(cfg), "--dry-run"])
-        assert result.exit_code == 2
-        assert "Dataset probe failed" in result.output
+        assert result.exit_code == 0
+        assert "Dataset probe: not performed" in result.output
         # no run created
         assert not any(tmp.glob("runs*"))
     finally:
@@ -191,9 +191,11 @@ def test_calibrate_preflight_writes_canonical_manifest(tmp_path, monkeypatch: py
     monkeypatch.setattr(preflight_module, "run_inspection", record_inspection_identity)
 
     output = tmp_path / "preflight"
+    pinned_config = tmp_path / "pinned.yaml"
+    pinned_config.write_text("model:\n  revision: 6befbaca7398925921802abd1f277b495b78b738\n", encoding="utf-8")
     result = runner.invoke(
         app,
-        ["calibrate", str(snapshot), "--preflight", "--output", str(output)],
+        ["calibrate", str(snapshot), "--config", str(pinned_config), "--preflight", "--output", str(output)],
     )
     assert result.exit_code == 0, result.output
     report = json.loads((output / "preflight.json").read_text(encoding="utf-8"))
@@ -213,44 +215,34 @@ def test_calibrate_preflight_writes_canonical_manifest(tmp_path, monkeypatch: py
     assert not (output / "artifacts/checkpoint").exists()
 
 
-def test_calibrate_resume_reuses_existing() -> None:
-    import json
-    import shutil
-    import uuid
+def test_calibrate_resume_reuses_existing(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """CLI delegates to the runner, preserving run identity; no model is loaded."""
+    from openternary.experiment.metadata import write_json
 
-    tmp = pathlib.Path.cwd() / f"test_resume_cli_{uuid.uuid4().hex[:6]}"
-    tmp.mkdir(parents=True, exist_ok=True)
-    try:
-        # create initial run via CLI
-        cfg = tmp / "calib.yaml"
-        cfg.write_text(
-            "calibration:\n  enabled: true\n  dataset: synthetic\n  num_samples: 4\n  seq_len: 16\n  steps: 3\n  checkpoint_interval: 2\n",
-            encoding="utf-8",
-        )
-        out = tmp / "run"
-        result = runner.invoke(app, ["calibrate", "--config", str(cfg), "--output", str(out)])
-        assert result.exit_code == 0
-        assert (out / "calibration.json").exists()
-        # modify config to have more steps and resume
-        cfg2 = tmp / "calib2.yaml"
-        cfg2.write_text(
-            "calibration:\n  enabled: true\n  dataset: synthetic\n  num_samples: 4\n  seq_len: 16\n  steps: 5\n  checkpoint_interval: 2\n",
-            encoding="utf-8",
-        )
-        result2 = runner.invoke(app, ["calibrate", "--config", str(cfg2), "--output", str(out), "--resume"])
-        assert result2.exit_code == 0
-        # should not have created -001
-        assert not (pathlib.Path(str(out) + "-001")).exists()
-        assert (out / "artifacts" / "checkpoint" / "step_00004.pt").exists()
-        data = json.loads((out / "calibration.json").read_text(encoding="utf-8"))
-        assert data["steps"] == 5
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
-        # also clean possible -001
-        for p in pathlib.Path.cwd().glob("test_resume_cli_*"):
-            import shutil as _sh
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    calls = []
+    monkeypatch.setattr("openternary.utils.hf_cache.resolve_snapshot", lambda *args: snapshot)
 
-            _sh.rmtree(p, ignore_errors=True)
+    def fake_runner(config, teacher, output, **kwargs):
+        assert teacher == snapshot
+        calls.append(kwargs.get("resume", False))
+        checkpoint = output / "artifacts/checkpoint"
+        checkpoint.mkdir(parents=True, exist_ok=True)
+        (checkpoint / "step_00001.pt").write_text("fixture checkpoint")
+        write_json(output / "calibration.json", {"steps": config.calibration.steps})
+        return {"calibration_json": str(output / "calibration.json")}
+
+    monkeypatch.setattr("openternary.calibration.runner.run_calibration", fake_runner)
+    output = tmp_path / "run"
+    first = runner.invoke(app, ["calibrate", "--output", str(output)])
+    assert first.exit_code == 0, first.output
+    original = (output / "environment.json").read_bytes()
+    resumed = runner.invoke(app, ["calibrate", "--output", str(output), "--resume"])
+    assert resumed.exit_code == 0, resumed.output
+    assert calls == [False, True]
+    assert (output / "environment.json").read_bytes() == original
+    assert not output.with_name(output.name + "-001").exists()
 
 
 def test_calibrate_resume_no_checkpoint_fails() -> None:

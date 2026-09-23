@@ -259,6 +259,8 @@ def build_preflight_report(
             "names": targets,
         },
         "resource_budget": {
+            "evaluation": "not_evaluated",
+            "note": "Budget limits are recorded policy; preflight status applies only to checks above.",
             "max_gpu_hours_per_phase": MAX_PHASE_GPU_HOURS,
             "max_active_artifact_gb": MAX_ACTIVE_ARTIFACT_GB,
             "stop_new_candidates_at_fraction": 0.8,
