@@ -74,7 +74,10 @@ def test_get_wiki_tiny_mock(monkeypatch: pytest.MonkeyPatch) -> None:
 
     fake_rows = [{"text": f"wiki text {i}"} for i in range(10)] + [{"text": "   "}, {"text": ""}]
 
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
     def fake_load_dataset(*args: object, **kwargs: object) -> FakeDS:  # type: ignore[no-untyped-def]
+        calls.append((args, kwargs))
         return FakeDS(fake_rows)  # type: ignore[return-value]
 
     import sys
@@ -84,13 +87,15 @@ def test_get_wiki_tiny_mock(monkeypatch: pytest.MonkeyPatch) -> None:
     fake_datasets.load_dataset = fake_load_dataset  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "datasets", fake_datasets)
 
-    texts, eff, fallback = get_calibration_texts("wiki-tiny", 4, 42, False)
+    revision = "b08601e04326c79dfdd32d625aee71d232d685c3"
+    texts, eff, fallback = get_calibration_texts("wiki-tiny", 4, 42, False, revision=revision)
     assert eff == "wiki-tiny"
     assert not fallback
     assert len(texts) == 4
     # deterministic: same seed gives same order
-    texts2, _, _ = get_calibration_texts("wiki-tiny", 4, 42, False)
+    texts2, _, _ = get_calibration_texts("wiki-tiny", 4, 42, False, revision=revision)
     assert texts == texts2
+    assert all(call[1]["revision"] == revision for call in calls)
 
 
 def test_get_wiki_fallback_when_datasets_missing(monkeypatch: pytest.MonkeyPatch) -> None:

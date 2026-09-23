@@ -9,6 +9,7 @@ Integrity gate を全 PASS した時のみ書き込みを行う（fail closed）
 
 from __future__ import annotations
 
+import hashlib
 import json
 import pathlib
 import typing
@@ -40,6 +41,14 @@ class IntegrityReport:
     details: dict[str, typing.Any]
     warnings: list[str]
     errors: list[str]
+
+
+def _sha256_file(path: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while block := stream.read(1024 * 1024):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def _read_yaml(p: pathlib.Path) -> dict[str, typing.Any]:
@@ -212,6 +221,8 @@ def integrity_gate(
         details["checkpoint_path"] = str(ckpt_path)
         ckpt = _load_checkpoint(ckpt_path)
         details["checkpoint_keys"] = list(ckpt.keys())
+        schema_version = ckpt.get("schema_version")
+        details["checkpoint_schema_version"] = schema_version
         # cursor module_idx
         cursor = ckpt.get("module_cursor", {})
         if isinstance(cursor, dict):
@@ -222,11 +233,39 @@ def integrity_gate(
             steps_per_mod_ckpt = int(cursor.get("steps_per_module", expected_steps_per_module))
             details["checkpoint_steps_per_module"] = steps_per_mod_ckpt
             if steps_per_mod_ckpt != expected_steps_per_module:
-                errors.append(f"checkpoint steps_per_module {steps_per_mod_ckpt} != expected {expected_steps_per_module}")
+                errors.append(
+                    f"checkpoint steps_per_module {steps_per_mod_ckpt} != expected {expected_steps_per_module}"
+                )
             # completed count
             manifest = ckpt.get("completed_manifest", [])
             if isinstance(manifest, list):
                 details["completed_manifest_count"] = len(manifest)
+                if schema_version == 3:
+                    for entry in manifest:
+                        if not isinstance(entry, dict):
+                            errors.append("checkpoint v3 manifest entry is not an object")
+                            continue
+                        relative = entry.get("file")
+                        expected_size = entry.get("size")
+                        expected_hash = entry.get("sha256")
+                        if (
+                            not isinstance(relative, str)
+                            or not isinstance(expected_size, int)
+                            or not isinstance(expected_hash, str)
+                        ):
+                            errors.append("checkpoint v3 manifest integrity metadata missing")
+                            continue
+                        state_path = run_dir / relative
+                        if not state_path.exists():
+                            errors.append(f"checkpoint state missing: {state_path}")
+                        elif state_path.stat().st_size != expected_size:
+                            errors.append(f"checkpoint state size mismatch: {state_path}")
+                        elif _sha256_file(state_path) != expected_hash:
+                            errors.append(f"checkpoint state hash mismatch: {state_path}")
+                elif schema_version == 2:
+                    warnings.append("legacy checkpoint schema v2: explicit recovery without state hashes")
+                else:
+                    errors.append(f"unsupported checkpoint schema: {schema_version}")
         else:
             # legacy checkpoint may have no module_cursor; fallback to step count
             warnings.append("checkpoint has no module_cursor (legacy)")
@@ -498,7 +537,9 @@ def finalize_run(
         expected_tensor_entries,
     )
     if not report.passed:
-        raise IntegrityError(f"integrity gate FAILED: {report.errors} warnings={report.warnings} details={report.details}")
+        raise IntegrityError(
+            f"integrity gate FAILED: {report.errors} warnings={report.warnings} details={report.details}"
+        )
 
     if dry_run:
         return {"status": "dry_run_passed", "report": report.details, "warnings": report.warnings}

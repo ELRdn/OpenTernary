@@ -90,6 +90,33 @@ def test_runner_wiki_tiny_fallback_true(monkeypatch: pytest.MonkeyPatch) -> None
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_runner_synthetic_soft_to_hard_finishes_with_hard_contract(tmp_path: pathlib.Path) -> None:
+    cfg = load_config(
+        cli_overrides={
+            "calibration.enabled": True,
+            "calibration.dataset": "synthetic",
+            "calibration.method": "recon-soft-to-hard",
+            "calibration.num_samples": 4,
+            "calibration.seq_len": 16,
+            "calibration.steps": 3,
+            "calibration.checkpoint_interval": 1,
+            "calibration.hard_fraction": 0.34,
+        }
+    )
+    out = tmp_path / "soft-synthetic"
+
+    run_calibration(cfg, None, out)
+
+    data = json.loads((out / "calibration.json").read_text(encoding="utf-8"))
+    checkpoint = torch.load(out / "artifacts/checkpoint/step_00002.pt", weights_only=True)
+    assert data["assignment"]["mode"] == "soft-to-hard"
+    assert data["assignment"]["trainable"] is False
+    assert data["assignment"]["hardening_source"] == "frozen-weight-midpoint"
+    assert data["assignment"]["hardening_uses_zero_logit_bias"] is False
+    assert data["assignment"]["final_state"] == "hard"
+    assert checkpoint["assignment"]["next_temperature"] is None
+
+
 def test_runner_wiki_tiny_no_fallback_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     import sys
 

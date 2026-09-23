@@ -239,7 +239,10 @@ def _classify_tensor(name: str, shape: list[int], dtype: str, app_config: Any) -
     """Adapter経由でquantizable判定. Gemma4優先、fallbackはbase."""
     from openternary.adapters.gemma4 import Gemma4Adapter
 
-    adapter = Gemma4Adapter()
+    adapter = Gemma4Adapter(
+        target_attention=bool(app_config.quantization.target.attention),
+        target_mlp=bool(app_config.quantization.target.mlp),
+    )
     try:
         info = adapter.classify(name, shape, dtype)
         return (info.role, info.quantizable, info.exclude_reason)

@@ -69,7 +69,7 @@ class DiskActivationCache:
     """Disk-backed activation cache.
 
     Layout: cache_dir / layer_name_sanitized / batch_{idx}.pt
-    Each file contains {"input": Tensor, "teacher_output": Tensor, "bias": Tensor|None}
+    Captured files contain input, teacher_output and attention_mask tensors.
     """
 
     def __init__(self, cache_dir: pathlib.Path) -> None:
@@ -96,6 +96,25 @@ class DiskActivationCache:
         if not self.cache_dir.exists():
             return []
         return [p.name for p in self.cache_dir.iterdir() if p.is_dir()]
+
+    def load_valid(self, layer_name: str, batch_idx: int) -> dict[str, torch.Tensor]:
+        """Return token rows only; old caches must be recaptured, never guessed."""
+        data = self.load(layer_name, batch_idx)
+        mask = data.get("attention_mask")
+        if mask is None:
+            raise ValueError("activation cache has no attention_mask; recapture required")
+        if not ((mask == 0) | (mask == 1)).all().item():
+            raise ValueError("attention_mask must be binary")
+        valid = mask.reshape(-1).bool()
+        result = {}
+        for key in ("input", "teacher_output"):
+            value = data[key]
+            if value.ndim < 2 or value.numel() // value.shape[-1] != valid.numel():
+                raise ValueError(f"attention_mask does not align with {key}")
+            result[key] = value.reshape(-1, value.shape[-1])[valid]
+        if not valid.any().item():
+            raise ValueError("attention_mask contains no valid tokens")
+        return result
 
     def count_batches(self, layer_name: str) -> int:
         safe_name = layer_name.replace(".", "_").replace("/", "_")
@@ -136,6 +155,7 @@ def capture_teacher_pairs(
     # Prepare hooks
     activations: dict[str, dict[str, torch.Tensor]] = {}  # type: ignore[type-arg]
     handles: list[typing.Any] = []
+    attention_mask = None
 
     def make_hook(name: str) -> typing.Any:
         def hook(module: nn.Module, inputs: tuple[torch.Tensor, ...], output: torch.Tensor) -> None:  # type: ignore[type-arg]
@@ -143,6 +163,8 @@ def capture_teacher_pairs(
             inp = inputs[0].detach()
             out = output.detach()
             activations[name] = {"input": inp, "teacher_output": out}
+            if attention_mask is not None:
+                activations[name]["attention_mask"] = attention_mask.detach()
 
         return hook
 
@@ -157,6 +179,8 @@ def capture_teacher_pairs(
                 activations.clear()
                 input_ids = batch["input_ids"].unsqueeze(0) if batch["input_ids"].dim() == 1 else batch["input_ids"]
                 attention_mask = batch.get("attention_mask")
+                if attention_mask is None:
+                    attention_mask = torch.ones_like(input_ids)
                 if attention_mask is not None and attention_mask.dim() == 1:
                     attention_mask = attention_mask.unsqueeze(0)
                 # Move to model device (usually cpu)

@@ -83,6 +83,14 @@ def run_synthetic_tiny(
     threshold_ste_width = float(getattr(calib_cfg, "threshold_ste_width", 0.1))
     threshold_lr = getattr(calib_cfg, "threshold_lr", None)
     threshold_lr = float(threshold_lr) if threshold_lr is not None else float(calib_cfg.lr)
+    soft_to_hard_enabled = str(getattr(calib_cfg, "method", "recon-scale")) == "recon-soft-to-hard"
+    temperature_schedule = str(getattr(calib_cfg, "temperature_schedule", "linear"))
+    temperature_start = float(getattr(calib_cfg, "temperature_start", 1.0))
+    temperature_end = float(getattr(calib_cfg, "temperature_end", 0.05))
+    hard_fraction = float(getattr(calib_cfg, "hard_fraction", 0.1))
+    zero_logit_bias = float(getattr(calib_cfg, "zero_logit_bias", 0.0))
+    if soft_to_hard_enabled and threshold_enabled:
+        raise ValueError("recon-soft-to-hard requires threshold_enabled=false")
 
     # Deterministic dummy weight: seed before generation for reproducibility (resume vs continuous)
     _seed = int(calib_cfg.seed) if calib_cfg.seed is not None else int(app_config.seed)
@@ -148,6 +156,60 @@ def run_synthetic_tiny(
     target_names = ["layer_0", "layer_1"]
     torch.manual_seed(int(calib_cfg.seed) if calib_cfg.seed is not None else int(app_config.seed))
     steps = int(calib_cfg.steps)
+    assignment_contract = {
+        "mode": "soft-to-hard" if soft_to_hard_enabled else ("threshold-ste" if threshold_enabled else "fixed"),
+        "trainable": False if soft_to_hard_enabled else None,
+        "hardening_source": "frozen-weight-midpoint" if soft_to_hard_enabled else None,
+        "hardening_uses_zero_logit_bias": False if soft_to_hard_enabled else None,
+        "temperature_schedule": temperature_schedule if soft_to_hard_enabled else None,
+        "temperature_start": temperature_start if soft_to_hard_enabled else None,
+        "temperature_end": temperature_end if soft_to_hard_enabled else None,
+        "hard_fraction": hard_fraction if soft_to_hard_enabled else None,
+        "zero_logit_bias": zero_logit_bias if soft_to_hard_enabled else None,
+        "final_state": "hard",
+    }
+
+    def soft_temperature(step: int) -> float:
+        from openternary.quant.soft_ternary import temperature_at_step
+
+        return temperature_at_step(
+            step,
+            steps,
+            start=temperature_start,
+            end=temperature_end,
+            schedule=typing.cast(typing.Any, temperature_schedule),
+            hard_fraction=hard_fraction,
+        )
+
+    def soft_weight_hat(step: int, effective_scale: torch.Tensor) -> torch.Tensor:
+        from openternary.quant.soft_ternary import harden_soft_codes, soft_ternary_codes
+        from openternary.quant.threshold import _expand_per_group
+
+        reference: float | torch.Tensor
+        soft_group_size: int | None
+        if scale_granularity == "per_tensor":
+            reference = float(reference_scales[0].item())
+            soft_group_size = None
+        else:
+            reference = reference_scales
+            soft_group_size = group_size
+        temperature = soft_temperature(step)
+        if temperature == 0.0:
+            assignment = harden_soft_codes(dummy_weight, reference_scale=reference, group_size=soft_group_size).to(
+                torch.float32
+            )
+        else:
+            assignment = soft_ternary_codes(
+                dummy_weight,
+                reference_scale=reference,
+                group_size=soft_group_size,
+                temperature=temperature,
+                zero_logit_bias=zero_logit_bias,
+            )
+        if scale_granularity == "per_tensor":
+            return assignment * effective_scale[0]
+        return assignment * _expand_per_group(effective_scale, tuple(dummy_weight.shape), group_size)
+
     ckpt_dir = out / "artifacts" / "checkpoint"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     start_step = 0
@@ -227,6 +289,8 @@ def run_synthetic_tiny(
 
                         eff_exp = _expand_per_group(eff_scale, tuple(dummy_weight.shape), group_size)
                         w_hat = codes_ste * eff_exp
+                elif soft_to_hard_enabled:
+                    w_hat = soft_weight_hat(step, eff_scale)
                 else:
                     if scale_granularity == "per_tensor":
                         w_hat = codes_fixed.to(torch.float32) * eff_scale[0]
@@ -258,6 +322,12 @@ def run_synthetic_tiny(
                 "step": step,
                 "loss": step_loss,
                 "threshold_enabled": threshold_enabled,
+                "assignment": {
+                    **assignment_contract,
+                    "next_temperature": (
+                        soft_temperature(step + 1) if soft_to_hard_enabled and step + 1 < steps else None
+                    ),
+                },
             }
             if threshold_enabled:
                 assert raw_threshold is not None
@@ -317,6 +387,35 @@ def run_synthetic_tiny(
         thr_min = float(thr_final.min().item())
         thr_max = float(thr_final.max().item())
         thr_std = float(thr_final.float().std(correction=0).item()) if thr_final.numel() > 1 else 0.0
+    elif soft_to_hard_enabled:
+        from openternary.quant.soft_ternary import harden_soft_codes
+        from openternary.quant.threshold import _expand_per_group
+
+        eff_final = get_effective_scales(raw_param, zero_mask_t)
+        if scale_granularity == "per_tensor":
+            codes_final = harden_soft_codes(dummy_weight, reference_scale=float(reference_scales[0].item()))
+            w_hat_final = codes_final.to(torch.float32) * eff_final[0]
+            w_hat_init = codes_final.to(torch.float32) * orig_scales[0]
+        else:
+            codes_final = harden_soft_codes(
+                dummy_weight,
+                reference_scale=reference_scales,
+                group_size=group_size,
+            )
+            w_hat_final = codes_final.to(torch.float32) * _expand_per_group(
+                eff_final, tuple(dummy_weight.shape), group_size
+            )
+            w_hat_init = codes_final.to(torch.float32) * _expand_per_group(
+                orig_scales, tuple(dummy_weight.shape), group_size
+            )
+        code_fingerprint_before = hashlib.sha256(codes_final.numpy().tobytes()).hexdigest()
+        code_fingerprint_after = code_fingerprint_before
+        code_change_ratio = 0.0
+        zero_before = zero_after = float((codes_final == 0).float().mean().item())
+        thr_fingerprint_before = ""
+        thr_fingerprint_after = ""
+        thr_mean = thr_min = thr_max = thr_std = 0.0
+        thr_final = None  # type: ignore[assignment]
     else:
         eff_final = get_effective_scales(raw_param, zero_mask_t)
         if scale_granularity == "per_tensor":
@@ -417,6 +516,7 @@ def run_synthetic_tiny(
         "used_dummy_simulation": True,
         "teacher_snapshot": None,
         "threshold_enabled": threshold_enabled,
+        "assignment": assignment_contract,
         "threshold_fingerprint_before": thr_fingerprint_before,
         "threshold_fingerprint_after": thr_fingerprint_after,
         "threshold_ratio_mean": thr_mean,

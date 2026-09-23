@@ -336,7 +336,11 @@ Potential trainable parameters (updated):
 - [x] group scale (`reconstruction_scale`, Phase 4.1)
 - [x] threshold (`threshold_ratio` via clipped STE, Phase 4.2)
 - [ ] modulation terms (deferred)
-- [ ] soft ternary parameters (Phase 4.3 temperature annealing)
+- [ ] trainable hard-assignment parameter (Phase 4.3 redesign required; current temperature annealing trains scales only)
+
+### Phase 4.3 current hardening contract
+
+The current soft-to-hard path is a differentiable relaxation for fitting reconstruction scales, not a trainable assignment model. Source weights and reference scales are frozen. Final codes are selected by the fixed midpoint rule `abs(weight / reference_scale) > 0.5`; temperature and `zero_logit_bias` are not inputs to materialization. Reports and checkpoints expose `assignment.trainable=false`, `hardening_source=frozen-weight-midpoint`, and `hardening_uses_zero_logit_bias=false`. A future trainable-assignment design must define one shared parameterization for forward, checkpoint/resume, final hardening, and materialization before new full-model experiments are allowed.
 
 ---
 

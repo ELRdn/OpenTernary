@@ -1,5 +1,9 @@
 """CLI help and exit code tests — Phase 0 acceptance criteria."""
 
+import json
+import pathlib
+import struct
+
 from typer.testing import CliRunner
 
 from openternary.cli.main import app
@@ -40,23 +44,55 @@ def test_dry_run_with_config_and_group_size() -> None:
     assert "group_size: 64" in result.output
 
 
-def test_inspect_normal_creates_run_exit_0() -> None:
-    # inspect is now implemented (header-only, cache-only). Should exit 0 and create inspection.json.
-    import pathlib
-    import shutil
-    import uuid
+def test_inspect_normal_creates_run_exit_0(tmp_path: pathlib.Path) -> None:
+    """The normal path is hermetic and must not depend on a populated HF cache."""
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    config = {
+        "architectures": ["Gemma4ForConditionalGeneration"],
+        "model_type": "gemma4",
+        "transformers_version": "5.6.2",
+        "dtype": "bfloat16",
+        "tie_word_embeddings": True,
+        "text_config": {
+            "model_type": "gemma4_text",
+            "hidden_size": 4,
+            "intermediate_size": 8,
+            "num_hidden_layers": 1,
+            "num_attention_heads": 1,
+            "num_key_value_heads": 1,
+            "vocab_size": 8,
+        },
+        "vision_config": {"hidden_size": 4, "num_hidden_layers": 1},
+        "audio_config": {"hidden_size": 4, "num_hidden_layers": 1},
+    }
+    (snapshot / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    header = {
+        "model.layers.0.self_attn.q_proj.weight": {
+            "dtype": "BF16",
+            "shape": [4, 4],
+            "data_offsets": [0, 32],
+        },
+        "model.embed_tokens.weight": {
+            "dtype": "BF16",
+            "shape": [8, 4],
+            "data_offsets": [32, 96],
+        },
+    }
+    header_json = json.dumps(header).encode("utf-8")
+    with (snapshot / "model.safetensors").open("wb") as file:
+        file.write(struct.pack("<Q", len(header_json)))
+        file.write(header_json)
+        file.write(b"\x00" * 96)
 
-    tmp_base = pathlib.Path.cwd() / f"test_cli_{uuid.uuid4().hex[:6]}"
-    tmp_base.mkdir(parents=True, exist_ok=True)
-    try:
-        out = str(tmp_base / "run_cli_test")
-        result = runner.invoke(app, ["inspect", "--output", out])
-        assert result.exit_code == 0, result.output
-        assert pathlib.Path(out).exists()
-        assert (pathlib.Path(out) / "inspection.json").exists()
-        assert (pathlib.Path(out) / "metrics.json").exists()
-    finally:
-        shutil.rmtree(tmp_base, ignore_errors=True)
+    out = tmp_path / "run_cli_test"
+    result = runner.invoke(app, ["inspect", str(snapshot), "--output", str(out)])
+
+    assert result.exit_code == 0, result.output
+    assert (out / "inspection.json").exists()
+    assert (out / "metrics.json").exists()
+    inspection = json.loads((out / "inspection.json").read_text(encoding="utf-8"))
+    assert inspection["summary"]["total_tensors"] == 2
 
 
 def test_quantize_now_implemented_dry_run() -> None:

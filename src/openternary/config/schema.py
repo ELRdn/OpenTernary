@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ModelConfig(BaseModel):
@@ -78,11 +78,16 @@ class CalibrationConfig(BaseModel):
     """
 
     enabled: bool = Field(default=False, description="較正を有効化するか")
-    method: Literal["recon-scale", "recon-threshold"] = Field(
+    method: Literal["recon-scale", "recon-threshold", "recon-soft-to-hard"] = Field(
         default="recon-scale", description="較正手法（recon-scale: Phase4.1, recon-threshold: Phase4.2）"
     )
     dataset: Literal["synthetic", "wiki-tiny"] = Field(
         default="synthetic", description="較正用データセット（c4-tinyは4.2以降）"
+    )
+    dataset_revision: str = Field(
+        default="b08601e04326c79dfdd32d625aee71d232d685c3",
+        min_length=40,
+        description="wiki-tiny source revision (Salesforce/wikitext commit)",
     )
     num_samples: int = Field(default=32, ge=1, le=1024, description="較正サンプル数")
     seq_len: int = Field(default=128, ge=16, le=512, description="較正サンプル系列長")
@@ -100,6 +105,16 @@ class CalibrationConfig(BaseModel):
     )
     threshold_ste_width: float = Field(default=0.1, gt=0, description="clipped STE width")
     threshold_eps: float = Field(default=0.01, gt=0, lt=0.5, description="threshold_ratio 境界 eps")
+    temperature_schedule: Literal["linear", "cosine", "exponential"] = Field(
+        default="linear", description="soft-to-hard temperature schedule"
+    )
+    temperature_start: float = Field(default=1.0, gt=0, description="soft-to-hard initial temperature")
+    temperature_end: float = Field(default=0.05, gt=0, description="soft-to-hard final soft temperature")
+    hard_fraction: float = Field(default=0.1, ge=0, lt=1, description="fraction of final steps using hard codes")
+    zero_logit_bias: float = Field(
+        default=0.0,
+        description="optional fixed zero-code bias for the soft path; final hardening does not use it",
+    )
     optimizer: Literal["adam", "sgd"] = Field(default="adam", description="オプティマイザ種別")
     loss: Literal["mse", "l1"] = Field(default="mse", description="再構成損失種別")
     window: Literal["per-layer"] = Field(default="per-layer", description="較正ウィンドウ（4.1/4.2 は per-layer のみ）")
@@ -111,6 +126,16 @@ class CalibrationConfig(BaseModel):
     seed: int | None = Field(default=None, description="較正専用シード（None なら AppConfig.seed を継承）")
     # Phase 4.2 warm start
     init_from: str | None = Field(default=None, description="Phase 4.1 成果物からの warm start 元 run dir")
+
+    @model_validator(mode="after")
+    def validate_assignment_method(self) -> CalibrationConfig:
+        """Reject ambiguous or non-annealing assignment configurations."""
+        if self.method == "recon-soft-to-hard":
+            if self.threshold_enabled:
+                raise ValueError("recon-soft-to-hard requires threshold_enabled=false")
+            if self.temperature_start < self.temperature_end:
+                raise ValueError("temperature_start must be greater than or equal to temperature_end")
+        return self
 
 
 class GenerationConfig(BaseModel):

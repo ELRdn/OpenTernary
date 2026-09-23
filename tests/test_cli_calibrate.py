@@ -1,6 +1,9 @@
 """CLI calibrate tests."""
 
+import hashlib
+import json
 import pathlib
+import struct
 
 import pytest
 from typer.testing import CliRunner
@@ -10,6 +13,56 @@ torch = pytest.importorskip("torch")  # noqa: F401, E402
 from openternary.cli.main import app  # noqa: E402
 
 runner = CliRunner()
+
+
+@pytest.mark.parametrize(
+    ("revision", "expected"),
+    [
+        (None, False),
+        ("main", False),
+        ("6befbaca7398925921802abd1f277b495b78b738", True),
+    ],
+)
+def test_preflight_revision_pin_requires_commit_hash(revision, expected) -> None:
+    from openternary.calibration.preflight import _revision_is_pinned
+
+    assert _revision_is_pinned(revision) is expected
+
+
+def test_preflight_revision_must_match_canonical_target() -> None:
+    from openternary.calibration.preflight import CANONICAL_MODEL_REVISION, _revision_matches_canonical
+
+    assert _revision_matches_canonical(CANONICAL_MODEL_REVISION) is True
+    assert _revision_matches_canonical("0" * 40) is False
+
+
+def test_preflight_canonical_inventory_and_weight_are_exact() -> None:
+    from openternary.calibration.preflight import (
+        CANONICAL_TARGET_NAMES,
+        CANONICAL_WEIGHT_SHA256,
+        _weight_matches_canonical,
+    )
+
+    assert len(CANONICAL_TARGET_NAMES) == 205
+    assert len(set(CANONICAL_TARGET_NAMES)) == 205
+    assert "model.language_model.layers.0.self_attn.k_proj.weight" in CANONICAL_TARGET_NAMES
+    assert "model.language_model.layers.15.self_attn.k_proj.weight" not in CANONICAL_TARGET_NAMES
+    assert _weight_matches_canonical([{"name": "model.safetensors", "sha256": CANONICAL_WEIGHT_SHA256}])
+    assert not _weight_matches_canonical([{"name": "model.safetensors", "sha256": "0" * 64}])
+
+
+def test_preflight_repo_contracts_do_not_depend_on_invocation_cwd(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openternary.calibration.preflight import _git_state, _protocol_files
+
+    monkeypatch.chdir(tmp_path)
+
+    protocol_files = _protocol_files()
+    assert len(protocol_files) == 6
+    assert all(len(item["sha256"]) == 64 for item in protocol_files)
+    assert _git_state()["commit"] != "unknown"
 
 
 def test_calibrate_dry_run_no_filesystem() -> None:
@@ -82,6 +135,82 @@ def test_calibrate_help() -> None:
     result = runner.invoke(app, ["calibrate", "--help"])
     assert result.exit_code == 0
     assert "calibrate" in result.output.lower()
+
+
+def test_calibrate_preflight_writes_canonical_manifest(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import openternary.calibration.preflight as preflight_module
+
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    (snapshot / "config.json").write_text(
+        json.dumps(
+            {
+                "architectures": ["Gemma4ForConditionalGeneration"],
+                "model_type": "gemma4",
+                "text_config": {"num_hidden_layers": 35},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (snapshot / "tokenizer.json").write_text("{}", encoding="utf-8")
+    target_names = [
+        f"model.language_model.layers.{index}.{family}.{projection}.weight"
+        for index in range(35)
+        for family, projection in (
+            [("mlp", "down_proj"), ("mlp", "gate_proj"), ("mlp", "up_proj")]
+            + [
+                ("self_attn", name)
+                for name in (["k_proj", "o_proj", "q_proj", "v_proj"] if index < 15 else ["o_proj", "q_proj"])
+            ]
+        )
+    ]
+    header = {
+        name: {
+            "dtype": "BF16",
+            "shape": [1, 1],
+            "data_offsets": [index * 2, index * 2 + 2],
+        }
+        for index, name in enumerate(target_names)
+    }
+    encoded = json.dumps(header).encode("utf-8")
+    with (snapshot / "model.safetensors").open("wb") as stream:
+        stream.write(struct.pack("<Q", len(encoded)))
+        stream.write(encoded)
+        stream.write(b"\x00" * (205 * 2))
+    monkeypatch.setattr(
+        "openternary.calibration.preflight.CANONICAL_WEIGHT_SHA256",
+        hashlib.sha256((snapshot / "model.safetensors").read_bytes()).hexdigest(),
+    )
+    inspected_model_ids: list[str] = []
+    original_run_inspection = preflight_module.run_inspection
+
+    def record_inspection_identity(config, **kwargs):
+        inspected_model_ids.append(config.model.id)
+        return original_run_inspection(config, **kwargs)
+
+    monkeypatch.setattr(preflight_module, "run_inspection", record_inspection_identity)
+
+    output = tmp_path / "preflight"
+    result = runner.invoke(
+        app,
+        ["calibrate", str(snapshot), "--preflight", "--output", str(output)],
+    )
+    assert result.exit_code == 0, result.output
+    report = json.loads((output / "preflight.json").read_text(encoding="utf-8"))
+    assert report["status"] == "pass"
+    assert report["acceptance_scope"] == "preflight"
+    assert report["model"]["inspection_id"] == "google/gemma-4-E2B-it-qat-q4_0-unquantized"
+    assert inspected_model_ids == [report["model"]["inspection_id"]]
+    assert report["model"]["source_locator"] == str(snapshot.resolve())
+    assert report["target_inventory"]["count"] == 205
+    assert report["checks"]["canonical_target_inventory"] is True
+    assert report["checks"]["canonical_weight_sha256"] is True
+    assert report["source"]["revision"] == "6befbaca7398925921802abd1f277b495b78b738"
+    assert all(len(item["sha256"]) == 64 for item in report["source"]["files"])
+    assert "docs/plans/p0-p7-research-acceptance.md" in {item["path"] for item in report["protocol_files"]}
+    assert "existing_artifacts" in report
+    assert all("classification" in item for item in report["existing_artifacts"]["runs"])
+    assert not (output / "artifacts/checkpoint").exists()
 
 
 def test_calibrate_resume_reuses_existing() -> None:

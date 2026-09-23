@@ -22,7 +22,6 @@ from typer.testing import CliRunner  # noqa: E402
 
 from openternary.calibration.recovery import IntegrityError, finalize_run, integrity_gate  # noqa: E402
 from openternary.cli.main import app  # noqa: E402
-from openternary.config.loader import load_config  # noqa: E402
 
 runner = CliRunner()
 
@@ -35,6 +34,7 @@ def _make_fake_run(
     module_idx: int = 2,
     steps_per_module: int = 3,
     shard_count: int = 1,
+    schema_version: int = 2,
 ) -> pathlib.Path:
     """最小の fake run を作成して recovery のゲートを PASS させる.
 
@@ -49,8 +49,27 @@ def _make_fake_run(
     # config.yaml（最小）
     cfg_dict = {
         "model": {"id": "dummy/test", "revision": "test"},
-        "quantization": {"method": "naive", "group_size": 8, "scale_granularity": "per_tensor", "grouping_scheme": "last-dim-rowwise-v1"},
-        "calibration": {"enabled": True, "method": "recon-threshold", "dataset": "synthetic", "num_samples": 4, "seq_len": 16, "steps": steps_per_module, "lr": 0.001, "threshold_enabled": True, "threshold_eps": 0.01, "threshold_ste_width": 0.1, "window": "per-layer", "checkpoint_interval": 1, "seed": 42},
+        "quantization": {
+            "method": "naive",
+            "group_size": 8,
+            "scale_granularity": "per_tensor",
+            "grouping_scheme": "last-dim-rowwise-v1",
+        },
+        "calibration": {
+            "enabled": True,
+            "method": "recon-threshold",
+            "dataset": "synthetic",
+            "num_samples": 4,
+            "seq_len": 16,
+            "steps": steps_per_module,
+            "lr": 0.001,
+            "threshold_enabled": True,
+            "threshold_eps": 0.01,
+            "threshold_ste_width": 0.1,
+            "window": "per-layer",
+            "checkpoint_interval": 1,
+            "seed": 42,
+        },
         "seed": 42,
         "device": "cpu",
         "dtype": "bf16",
@@ -96,7 +115,7 @@ def _make_fake_run(
     if shard_count == 1:
         shard_name = f"model-00001-of-{shard_count:05d}.safetensors"
         _save(tensors, str(snap_dir / shard_name))
-        weight_map = {k: shard_name for k in tensors}
+        weight_map = dict.fromkeys(tensors, shard_name)
     else:
         # 2 shards: split tensors
         items = list(tensors.items())
@@ -115,7 +134,10 @@ def _make_fake_run(
         if len(weight_map) < n_tensors:
             # ensure all tensors mapped
             pass
-    index_data = {"metadata": {"total_size": sum(int(t.numel() * t.element_size()) for t in tensors.values())}, "weight_map": weight_map}
+    index_data = {
+        "metadata": {"total_size": sum(int(t.numel() * t.element_size()) for t in tensors.values())},
+        "weight_map": weight_map,
+    }
     (snap_dir / "model.safetensors.index.json").write_text(json.dumps(index_data, indent=2), encoding="utf-8")
 
     # checkpoint — 最終 cursor
@@ -126,10 +148,21 @@ def _make_fake_run(
         name = f"module_{i:05d}"
         sanitized = name.replace(".", "_").replace("/", "_")
         rel = f"artifacts/calibration_state/{sanitized}.safetensors"
-        manifest.append({"module": name, "file": rel})
+        entry = {"module": name, "file": rel}
+        if schema_version == 3:
+            state_path = run_dir / rel
+            entry["size"] = state_path.stat().st_size
+            entry["sha256"] = _hash_file(state_path)
+        manifest.append(entry)
     ckpt_data = {
-        "schema_version": 2,
-        "module_cursor": {"module_idx": module_idx, "module_name": f"module_{module_idx-1:05d}" if module_idx > 0 else "module_00000", "step": 0, "steps_per_module": steps_per_module, "completed_count": n_state},
+        "schema_version": schema_version,
+        "module_cursor": {
+            "module_idx": module_idx,
+            "module_name": f"module_{module_idx - 1:05d}" if module_idx > 0 else "module_00000",
+            "step": 0,
+            "steps_per_module": steps_per_module,
+            "completed_count": n_state,
+        },
         "completed_manifest": manifest,
         "completed_module_params": {},
         "loss_history": [1.0, 0.8, 0.6],
@@ -171,7 +204,14 @@ def test_finalize_success_and_mtime_unchanged() -> None:
         before_idx_mtime = idx_path.stat().st_mtime
 
         time.sleep(0.05)  # ensure mtime difference would be detectable
-        result = finalize_run(run_dir, expected_targets=2, expected_state_files=2, expected_steps_per_module=3, expected_total_steps=6, expected_tensor_entries=2)
+        result = finalize_run(
+            run_dir,
+            expected_targets=2,
+            expected_state_files=2,
+            expected_steps_per_module=3,
+            expected_total_steps=6,
+            expected_tensor_entries=2,
+        )
         assert result["status"] == "recovered"
         assert (run_dir / "calibration.json").exists()
         assert (run_dir / "metrics.json").exists()
@@ -204,7 +244,14 @@ def test_finalize_fail_closed_incomplete_state() -> None:
         run_dir = _make_fake_run(tmp, n_state=1, n_tensors=2, module_idx=2, steps_per_module=3)
         # 期待を 2 にして gate は失敗すべき
         with pytest.raises(IntegrityError):
-            finalize_run(run_dir, expected_targets=2, expected_state_files=2, expected_steps_per_module=3, expected_total_steps=6, expected_tensor_entries=2)
+            finalize_run(
+                run_dir,
+                expected_targets=2,
+                expected_state_files=2,
+                expected_steps_per_module=3,
+                expected_total_steps=6,
+                expected_tensor_entries=2,
+            )
         # fail closed: calibration.json は作られない
         assert not (run_dir / "calibration.json").exists()
         assert not (run_dir / "metrics.json").exists()
@@ -222,8 +269,43 @@ def test_finalize_fail_closed_missing_shard() -> None:
         shard = list(snap_dir.glob("*.safetensors"))[0]
         shard.unlink()
         with pytest.raises(IntegrityError):
-            finalize_run(run_dir, expected_targets=2, expected_state_files=2, expected_steps_per_module=3, expected_total_steps=6, expected_tensor_entries=2)
+            finalize_run(
+                run_dir,
+                expected_targets=2,
+                expected_state_files=2,
+                expected_steps_per_module=3,
+                expected_total_steps=6,
+                expected_tensor_entries=2,
+            )
         assert not (run_dir / "calibration.json").exists()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_v3_recovery_rejects_corrupt_state_manifest() -> None:
+    tmp = pathlib.Path.cwd() / f"test_final_v3_hash_{uuid.uuid4().hex[:6]}"
+    tmp.mkdir(parents=True, exist_ok=True)
+    try:
+        run_dir = _make_fake_run(
+            tmp,
+            n_state=2,
+            n_tensors=2,
+            module_idx=2,
+            steps_per_module=3,
+            schema_version=3,
+        )
+        state = next((run_dir / "artifacts/calibration_state").glob("*.safetensors"))
+        state.write_bytes(state.read_bytes() + b"corrupt")
+        report = integrity_gate(
+            run_dir,
+            expected_targets=2,
+            expected_state_files=2,
+            expected_steps_per_module=3,
+            expected_total_steps=6,
+            expected_tensor_entries=2,
+        )
+        assert report.passed is False
+        assert any("hash" in error or "size" in error for error in report.errors)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -278,7 +360,7 @@ def test_cli_resume_reuses_existing_no_fork() -> None:
         # 今回は dry-run 的に finalize 経由でなく、通常の calibrate --resume-from のパスが -001 を作らないことを CLI レベルで確認
         # calibrate は synthetic でも run_calibration が動くため、既存 run の checkpoint を利用して拡張するケースをテスト
         # 簡易に: create_run の衝突回避が発動しないことを確認するため、--dry-run + --resume-from で -001 が作られないことを見る
-        result = runner.invoke(
+        runner.invoke(
             app,
             [
                 "calibrate",

@@ -191,5 +191,7 @@ def format_bytes(n: int) -> str:
 
 def is_oom_error(exc: BaseException) -> bool:
     """Check if exception is CUDA OOM."""
+    if torch is not None and isinstance(exc, torch.OutOfMemoryError):
+        return True
     msg = str(exc).lower()
     return "out of memory" in msg or "oom" in msg or "memory" in msg and "allocate" in msg

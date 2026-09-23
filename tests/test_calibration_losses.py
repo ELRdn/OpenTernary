@@ -2,6 +2,17 @@
 
 import pytest
 
+
+def test_streamed_backward_weights_elements_and_releases_each_graph():
+    from openternary.calibration.losses import backward_reconstruction
+
+    parameter = torch.tensor(1.0, requires_grad=True)
+    first = backward_reconstruction(torch.zeros(3), parameter.expand(3), 4, "mse")
+    second = backward_reconstruction(torch.zeros(1), (parameter * 2).expand(1), 4, "mse")
+    assert first + second == pytest.approx(1.75)
+    assert parameter.grad.item() == pytest.approx(3.5)
+
+
 torch = pytest.importorskip("torch")
 
 from openternary.calibration.losses import aggregated_mse_loss, l1_loss, mse_loss  # noqa: E402

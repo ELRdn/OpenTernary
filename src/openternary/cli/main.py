@@ -533,6 +533,109 @@ def benchmark(
     raise typer.Exit(0)
 
 
+@app.command("quality")
+def quality(
+    model: Annotated[str | None, typer.Argument(help="Model id or path")] = None,
+    data: Annotated[pathlib.Path | None, typer.Option("--data", help="Frozen quality dataset JSON")] = None,
+    split: Annotated[str, typer.Option("--split", help="Evaluation split: validation/test")] = "validation",
+    max_length: Annotated[int, typer.Option("--max-length", min=2, help="Perplexity context length")] = 512,
+    stride: Annotated[int, typer.Option("--stride", min=1, help="Perplexity sliding-window stride")] = 256,
+    config: Annotated[pathlib.Path | None, typer.Option("--config", "-c", help="Path to YAML config")] = None,
+    output: Annotated[str | None, typer.Option("--output", "-o", help="Run output directory")] = None,
+    seed: Annotated[int | None, typer.Option("--seed", help="Random seed")] = None,
+    device: Annotated[str | None, typer.Option("--device", help="Device: auto/cpu/cuda")] = None,
+    dtype: Annotated[str | None, typer.Option("--dtype", help="Dtype: bf16/fp16/fp32")] = None,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Validate inputs without loading the model")] = False,
+    verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Verbose")] = False,
+) -> None:
+    """Evaluate frozen general/Japanese PPL and instruction cases."""
+    from openternary.config.loader import dump_config_yaml, load_config
+    from openternary.experiment.metadata import write_json
+    from openternary.experiment.run import create_run
+    from openternary.utils.logging import setup_logging
+    from openternary.utils.seed import seed_everything
+
+    overrides = _resolve_cli_overrides(seed, device, dtype, output)
+    if model is not None:
+        overrides["model.id"] = model
+    try:
+        cfg = load_config(config_path=config, cli_overrides=overrides)
+    except FileNotFoundError as exc:
+        console.print(f"[red]Config file not found:[/red] {exc}")
+        raise typer.Exit(2) from exc
+    except ValueError as exc:
+        console.print(f"[red]Configuration error:[/red] {exc}")
+        raise typer.Exit(2) from exc
+
+    if data is None:
+        console.print("[red]quality requires --data with a frozen dataset JSON[/red]")
+        raise typer.Exit(2)
+    if not data.is_file():
+        console.print(f"[red]Quality dataset not found:[/red] {data}")
+        raise typer.Exit(2)
+    if split not in {"validation", "test"}:
+        console.print("[red]--split must be validation or test[/red]")
+        raise typer.Exit(2)
+    if stride >= max_length:
+        console.print("[red]--stride must be smaller than --max-length[/red]")
+        raise typer.Exit(2)
+
+    if dry_run:
+        try:
+            from openternary.benchmark.quality_runner import validate_quality_dataset
+
+            dataset_audit = validate_quality_dataset(data)
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            console.print(f"[red]Quality dataset validation failed:[/red] {exc}")
+            raise typer.Exit(2) from exc
+        console.print("[bold cyan]quality: dry-run — resolved config[/bold cyan]")
+        console.print(dump_config_yaml(cfg))
+        console.print(f"[dim]Data: {data} | split={split} | max_length={max_length} | stride={stride}[/dim]")
+        console.print(f"[dim]Dataset fingerprint: {dataset_audit['dataset_fingerprint']}[/dim]")
+        console.print("[dim]No run directory was created (--dry-run).[/dim]")
+        raise typer.Exit(0)
+
+    run_dir, run_id = create_run(cfg)
+    logger = setup_logging(run_dir, verbose=verbose)
+    logger.info(f"quality — run_id={run_id} run_dir={run_dir} split={split} data={data}")
+    seed_everything(cfg.seed)
+    try:
+        from openternary.benchmark.quality_runner import run_quality_benchmark
+
+        result = run_quality_benchmark(
+            cfg,
+            data,
+            split=split,
+            max_length=max_length,
+            stride=stride,
+        )
+    except (FileNotFoundError, ImportError, ValueError, RuntimeError) as exc:
+        _write_failed_metrics(run_dir, run_id, type(exc).__name__, str(exc))
+        console.print(f"[red]Quality evaluation failed:[/red] {exc}")
+        raise typer.Exit(2) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("quality evaluation failed")
+        _write_failed_metrics(run_dir, run_id, type(exc).__name__, str(exc))
+        console.print(f"[red]Quality evaluation failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    write_json(run_dir / "quality.json", result)
+    write_json(
+        run_dir / "metrics.json",
+        {
+            "status": "completed",
+            "run_id": run_id,
+            "quality_summary": result["summary"],
+            "dataset_fingerprint": result["dataset_fingerprint"],
+            "scientific_acceptance": False,
+        },
+    )
+    logger.info(f"quality written to {run_dir / 'quality.json'}")
+    typer.echo(f"Quality evaluation completed: {run_dir}")
+    typer.echo(f"quality.json saved to {run_dir / 'quality.json'}")
+    raise typer.Exit(0)
+
+
 @app.command("compare")
 def compare(
     baseline: Annotated[str | None, typer.Argument(help="Baseline run directory")] = None,
@@ -583,6 +686,8 @@ def compare(
 
     result = compare_runs(_pl.Path(baseline), _pl.Path(quantized))
     write_json(run_dir / "compare.json", result)
+    if isinstance(result.get("quality_gate"), dict):
+        write_json(run_dir / "acceptance.json", result["quality_gate"])
     write_json(run_dir / "metrics.json", {"status": "completed", "run_id": run_id, "compare": result})
     write_json(run_dir / "model.json", {"id": cfg.model.id, "revision": cfg.model.revision})
 
@@ -594,9 +699,23 @@ def compare(
         table.add_column("Metric", style="cyan")
         table.add_column("Value", style="white")
         table.add_row("Protocol match", str(result.get("protocol_match")))
+        if result.get("dataset_match") is not None:
+            table.add_row("Dataset match", str(result.get("dataset_match")))
+        if result.get("quality_report_schema_match") is not None:
+            table.add_row("Quality schema match", str(result.get("quality_report_schema_match")))
+        if result.get("model_revision_match") is not None:
+            table.add_row("Model revision match", str(result.get("model_revision_match")))
+        if result.get("actual_dtype_match") is not None:
+            table.add_row("Actual dtype match", str(result.get("actual_dtype_match")))
+        if result.get("actual_device_match") is not None:
+            table.add_row("Actual device match", str(result.get("actual_device_match")))
         table.add_row("Result observation", str(result.get("result_observation")))
         table.add_row("Result same?", str(result.get("result_match")))
         table.add_row("Content match", str(result.get("content_match")))
+        quality_gate = result.get("quality_gate")
+        if isinstance(quality_gate, dict):
+            table.add_row("Quality accepted", str(quality_gate.get("accepted")))
+            table.add_row("Quality composite", str(quality_gate.get("composite_score")))
         table.add_row(
             "Baseline result FP",
             str(result.get("baseline_result_fingerprint", "?"))[:24] + "..."
@@ -648,7 +767,14 @@ def calibrate(
     ] = None,
     finalize: Annotated[
         bool,
-        typer.Option("--finalize", help="Finalization-only recovery: regenerate calibration.json/metrics.json without re-running optimization"),
+        typer.Option(
+            "--finalize",
+            help="Finalization-only recovery: regenerate calibration.json/metrics.json without re-running optimization",
+        ),
+    ] = False,
+    preflight: Annotated[
+        bool,
+        typer.Option("--preflight", help="Validate source, canonical targets, environment, and resource budget only"),
     ] = False,
 ) -> None:
     """Calibrate — layer-local recon-scale-threshold (Phase 4.2)."""
@@ -676,6 +802,33 @@ def calibrate(
         console.print(f"[red]window={cfg.calibration.window} is not supported in Phase 4.1 (only per-layer)[/red]")
         raise typer.Exit(2)
 
+    if preflight:
+        if any((dry_run, resume, resume_from is not None, materialize_only, init_from is not None, finalize)):
+            console.print("[red]--preflight cannot be combined with execution/recovery options[/red]")
+            raise typer.Exit(2)
+        if not cfg.output:
+            console.print("[red]--preflight requires --output[/red]")
+            raise typer.Exit(2)
+        try:
+            from openternary.calibration.preflight import build_preflight_report, write_preflight_report
+            from openternary.utils.hf_cache import resolve_snapshot
+
+            snapshot = resolve_snapshot(cfg.model.id, cfg.model.revision)
+            output_path = pathlib.Path(cfg.output)
+            report = build_preflight_report(cfg, snapshot, output_path)
+            report_path = write_preflight_report(report, output_path)
+        except (FileNotFoundError, FileExistsError, ValueError) as e:
+            console.print(f"[red]Preflight failed:[/red] {e}")
+            raise typer.Exit(2) from e
+        if report["status"] != "pass":
+            console.print(f"[red]Preflight gates failed:[/red] {report['checks']}")
+            console.print(f"[dim]Report: {report_path}[/dim]")
+            raise typer.Exit(2)
+        console.print(
+            f"[bold green]preflight PASS:[/bold green] targets={report['target_inventory']['count']} report={report_path}"
+        )
+        raise typer.Exit(0)
+
     # --- Finalization-only recovery (Phase 4.2) ---
     if finalize:
         if materialize_only:
@@ -687,7 +840,9 @@ def calibrate(
         # finalize は既存 run 直下へ原子的に書き込むため --output が必須で存在している必要がある
         run_dir_final = pathlib.Path(cfg.output) if cfg.output else None
         if run_dir_final is None or not run_dir_final.exists():
-            console.print("[red]--finalize requires existing --output directory (e.g. runs/gemma4-e2b-g128-threshold-real-rocm)[/red]")
+            console.print(
+                "[red]--finalize requires existing --output directory (e.g. runs/gemma4-e2b-g128-threshold-real-rocm)[/red]"
+            )
             raise typer.Exit(2)
         # --resume / --resume-from は finalize では source checkpoint 指定として扱う（新規 -001 を作らない）
         ckpt_arg: pathlib.Path | None = None
@@ -724,11 +879,17 @@ def calibrate(
             raise typer.Exit(1) from e
         if dry_run:
             console.print("[bold cyan]finalize: dry-run — integrity gate PASS[/bold cyan]")
-            console.print(f"[dim]Checkpoint: {result_final.get('report', {})}[/dim]" if isinstance(result_final, dict) else "[dim]gate passed[/dim]")
+            console.print(
+                f"[dim]Checkpoint: {result_final.get('report', {})}[/dim]"
+                if isinstance(result_final, dict)
+                else "[dim]gate passed[/dim]"
+            )
             console.print(f"[dim]No files were written (--dry-run). Run dir: {run_dir_final}[/dim]")
         else:
             console.print(f"[bold green]finalize done:[/bold green] {run_dir_final}")
-            console.print(f"[dim]checkpoint={result_final.get('checkpoint')} state_files={result_final.get('state_files')} tensor_entries={result_final.get('snapshot_tensor_entries')}[/dim]")
+            console.print(
+                f"[dim]checkpoint={result_final.get('checkpoint')} state_files={result_final.get('state_files')} tensor_entries={result_final.get('snapshot_tensor_entries')}[/dim]"
+            )
             console.print(f"[dim]calibration.json: {result_final.get('calibration_json')}[/dim]")
             console.print(f"[dim]metrics.json: {result_final.get('metrics_json')} (status=completed)[/dim]")
         raise typer.Exit(0)
@@ -773,7 +934,11 @@ def calibrate(
             seed_probe = int(cfg.calibration.seed) if cfg.calibration.seed is not None else int(cfg.seed)
             # probe 1 sample
             _texts, _eff, _fallback = get_calibration_texts(
-                str(cfg.calibration.dataset), 1, seed_probe, bool(cfg.calibration.allow_dataset_fallback)
+                str(cfg.calibration.dataset),
+                1,
+                seed_probe,
+                bool(cfg.calibration.allow_dataset_fallback),
+                revision=str(cfg.calibration.dataset_revision),
             )
             # try tokenizer (best effort, if teacher snapshot exists)
             try:
@@ -930,7 +1095,9 @@ def calibrate(
             run_id = "resume"
     elif _is_resume_requested:
         # resume requested but no existing output to resume from
-        console.print("[red]no resumable checkpoint found: --resume/--resume-from requires existing --output directory[/red]")
+        console.print(
+            "[red]no resumable checkpoint found: --resume/--resume-from requires existing --output directory[/red]"
+        )
         raise typer.Exit(2)
     else:
         run_dir, run_id = create_run(cfg)

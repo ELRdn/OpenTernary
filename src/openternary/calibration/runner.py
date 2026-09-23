@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import pathlib
 import typing
+from collections.abc import Sequence
 
 try:
     import torch
@@ -41,6 +43,80 @@ def _hash_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _sha256_file(path: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while block := stream.read(1024 * 1024):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _state_manifest_entry(module_name: str, relative_path: str, path: pathlib.Path) -> dict[str, typing.Any]:
+    return {
+        "module": module_name,
+        "file": relative_path,
+        "size": path.stat().st_size,
+        "sha256": _sha256_file(path),
+    }
+
+
+def _validate_state_manifest_entry(entry: dict[str, typing.Any], path: pathlib.Path) -> None:
+    if not path.exists():
+        raise ValueError(f"checkpoint state integrity failure: missing {path}")
+    expected_size = entry.get("size")
+    expected_hash = entry.get("sha256")
+    if not isinstance(expected_size, int) or not isinstance(expected_hash, str):
+        raise ValueError("checkpoint state integrity metadata is missing")
+    if path.stat().st_size != expected_size:
+        raise ValueError(f"checkpoint state size mismatch: {path}")
+    if _sha256_file(path) != expected_hash:
+        raise ValueError(f"checkpoint state hash mismatch: {path}")
+
+
+def _clone_transaction_value(value: typing.Any) -> typing.Any:
+    """Clone optimizer transaction state to CPU without retaining graphs."""
+    if torch is not None and isinstance(value, torch.Tensor):
+        return value.detach().cpu().clone()
+    if isinstance(value, dict):
+        return {key: _clone_transaction_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_clone_transaction_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_clone_transaction_value(item) for item in value)
+    return value
+
+
+def _capture_optimizer_transaction(
+    params: Sequence[torch.Tensor], optimizer: torch.optim.Optimizer
+) -> dict[str, typing.Any]:
+    """Capture the state needed to roll one optimizer update back exactly."""
+    _require_torch()
+    transaction: dict[str, typing.Any] = {
+        "params": [param.detach().cpu().clone() for param in params],
+        "optimizer": _clone_transaction_value(optimizer.state_dict()),
+        "cpu_rng": torch.get_rng_state(),
+    }
+    if torch.cuda.is_available():
+        with contextlib.suppress(Exception):
+            transaction["cuda_rng"] = torch.cuda.get_rng_state_all()
+    return transaction
+
+
+def _restore_optimizer_transaction(
+    transaction: dict[str, typing.Any], params: Sequence[torch.Tensor], optimizer: torch.optim.Optimizer
+) -> None:
+    """Restore a failed optimizer update, including moments and RNG state."""
+    _require_torch()
+    for param, saved in zip(params, transaction["params"], strict=True):
+        param.data.copy_(saved.to(device=param.device, dtype=param.dtype))
+        param.grad = None
+    optimizer.load_state_dict(transaction["optimizer"])
+    torch.set_rng_state(transaction["cpu_rng"])
+    if "cuda_rng" in transaction and torch.cuda.is_available():
+        with contextlib.suppress(Exception):
+            torch.cuda.set_rng_state_all(transaction["cuda_rng"])
+
+
 def _find_latest_checkpoint(output_dir: pathlib.Path) -> pathlib.Path | None:
     ckpt_dir = pathlib.Path(output_dir) / "artifacts" / "checkpoint"
     if not ckpt_dir.exists():
@@ -55,28 +131,21 @@ def _find_latest_checkpoint(output_dir: pathlib.Path) -> pathlib.Path | None:
 
 
 def _snapshot_content_fingerprint(snapshot_path: pathlib.Path | str | None) -> str:
-    """Snapshot content fingerprint for cache invalidation (best-effort)."""
+    """Bounded byte hash: equal-size weight changes must invalidate caches."""
     if snapshot_path is None:
         return ""
-    try:
-        p = pathlib.Path(snapshot_path)
-        if not p.exists():
-            return ""
-        # hash config.json + tokenizer.json + list of safetensors sizes/names
-        h = hashlib.sha256()
-        for fname in ["config.json", "tokenizer.json"]:
-            fp = p / fname
-            if fp.exists():
-                with contextlib.suppress(Exception):
-                    h.update(hashlib.sha256(fp.read_bytes()).hexdigest().encode())
-        # include safetensors file names + sizes
-        for st in sorted(p.glob("*.safetensors")):
-            with contextlib.suppress(Exception):
-                h.update(st.name.encode())
-                h.update(str(st.stat().st_size).encode())
-        return h.hexdigest()
-    except Exception:
-        return ""
+    p = pathlib.Path(snapshot_path)
+    files = sorted(set(p.glob("*.json")) | set(p.glob("*.safetensors")))
+    if not any(f.suffix == ".safetensors" for f in files):
+        raise ValueError("snapshot fingerprint requires weight files")
+    h = hashlib.sha256()
+    for file in files:
+        digest = hashlib.sha256()
+        with file.open("rb") as stream:
+            while block := stream.read(1024 * 1024):
+                digest.update(block)
+        h.update(file.name.encode() + b"\0" + digest.digest())
+    return h.hexdigest()
 
 
 def _dataset_fingerprint(effective_dataset: str, requested_dataset: str) -> str:
@@ -121,10 +190,28 @@ def _run_materialize_only(
         raise FileNotFoundError(f"no checkpoint found for materialize-only in {out}/artifacts/checkpoint")
     print(f"[materialize-only] using checkpoint {ckpt_path}", flush=True)
 
-    # Load checkpoint data (v2 aware)
+    # Normal materialization is v3-only. Older artifacts require the explicit
+    # audited recovery/finalize workflow and are never silently upgraded here.
     ckpt = torch.load(str(ckpt_path), map_location="cpu")
+    if not isinstance(ckpt, dict) or ckpt.get("schema_version") != 3:
+        raise ValueError("checkpoint schema is not v3; audited conversion is required")
+    contract = ckpt.get("resume_contract")
+    if not isinstance(contract, dict):
+        raise ValueError("materialize-only checkpoint resume contract is missing")
+    if contract.get("source_fingerprint") != _snapshot_content_fingerprint(teacher_snapshot):
+        raise ValueError("materialize-only source fingerprint mismatch")
+    targets = contract["target_module_names"]
+    manifest_targets = [entry["module"] for entry in ckpt.get("completed_manifest", [])]
+    cursor = ckpt.get("module_cursor", {})
+    if manifest_targets != targets or cursor.get("module_idx") != len(targets) or cursor.get("step") != 0:
+        raise ValueError("materialize-only requires a complete target checkpoint")
+    if (
+        contract["quantization"] != app_config.quantization.model_dump()
+        or contract["calibration"] != app_config.calibration.model_dump()
+    ):
+        raise ValueError("materialize-only contract mismatch")
     # Support v2 module-major checkpoint: completed_module_params
-    if isinstance(ckpt, dict) and ckpt.get("schema_version") == 2 and "completed_module_params" in ckpt:
+    if isinstance(ckpt, dict) and ckpt.get("schema_version") == 3 and "completed_module_params" in ckpt:
         # Normalize to per_module shape expected below
         # completed_module_params maps mname -> {raw_param, raw_threshold?}
         # Also may have current module cursor param
@@ -149,7 +236,7 @@ def _run_materialize_only(
     # Need target module names — infer from checkpoint per_module keys or from teacher model structure
     # Try to get keys from ckpt
     per_module_keys: list[str] = []
-    if isinstance(ckpt, dict) and ckpt.get("schema_version") == 2 and "completed_manifest" in ckpt:
+    if isinstance(ckpt, dict) and ckpt.get("schema_version") == 3 and "completed_manifest" in ckpt:
         # P0 manifest based checkpoint
         per_module_keys = [e.get("module") for e in ckpt.get("completed_manifest", []) if e.get("module")]
         # include current cursor module if present and not yet in manifest
@@ -163,7 +250,7 @@ def _run_materialize_only(
             for k in ckpt["raw_params"]:
                 if k not in per_module_keys:
                     per_module_keys.append(k)
-    elif isinstance(ckpt, dict) and ckpt.get("schema_version") == 2 and "completed_module_params" in ckpt:
+    elif isinstance(ckpt, dict) and ckpt.get("schema_version") == 3 and "completed_module_params" in ckpt:
         per_module_keys = list(ckpt["completed_module_params"].keys())
         # include current cursor module if present
         mc = ckpt.get("module_cursor")
@@ -243,6 +330,13 @@ def _run_materialize_only(
     # also check app_config
     threshold_enabled_cfg = bool(getattr(app_config.calibration, "threshold_enabled", False))
     threshold_enabled = threshold_enabled_ckpt or threshold_enabled_cfg
+    soft_to_hard_enabled = str(getattr(app_config.calibration, "method", "recon-scale")) == "recon-soft-to-hard"
+    if soft_to_hard_enabled:
+        assignment = ckpt.get("assignment")
+        if not isinstance(assignment, dict) or assignment.get("mode") != "soft-to-hard":
+            raise ValueError("materialize-only soft-to-hard assignment contract is missing")
+        if assignment.get("final_state") != "hard" or assignment.get("next_temperature") is not None:
+            raise ValueError("materialize-only requires a completed hard soft-to-hard checkpoint")
     threshold_eps = float(getattr(app_config.calibration, "threshold_eps", 0.01))
     # legacy: ckpt may have threshold_eps
     if "threshold_eps" in ckpt:
@@ -263,7 +357,7 @@ def _run_materialize_only(
         raw_param, zero_mask_t = build_scale_params(orig_scales, zero_mask)
         # Override raw_param from checkpoint if available (v2 manifest or legacy)
         ckpt_raw = None
-        if isinstance(ckpt, dict) and ckpt.get("schema_version") == 2 and "completed_manifest" in ckpt:
+        if isinstance(ckpt, dict) and ckpt.get("schema_version") == 3 and "completed_manifest" in ckpt:
             # P0: load from calibration_state file (safetensors preferred)
             for entry in ckpt.get("completed_manifest", []):
                 if entry.get("module") == mname:
@@ -271,6 +365,7 @@ def _run_materialize_only(
                     fpath = out / rel if rel else None
                     if fpath and fpath.exists():
                         try:
+                            _validate_state_manifest_entry(entry, fpath)
                             if str(fpath).endswith(".safetensors"):
                                 from safetensors.torch import load_file as _load_sf  # type: ignore[import]
 
@@ -285,7 +380,7 @@ def _run_materialize_only(
             mc2 = ckpt.get("module_cursor")
             if mc2 and mc2.get("module_name") == mname and "current_raw_param" in ckpt:
                 ckpt_raw = ckpt.get("current_raw_param")
-        elif isinstance(ckpt, dict) and ckpt.get("schema_version") == 2 and "completed_module_params" in ckpt:
+        elif isinstance(ckpt, dict) and ckpt.get("schema_version") == 3 and "completed_module_params" in ckpt:
             if mname in ckpt["completed_module_params"]:
                 entry = ckpt["completed_module_params"][mname]
                 if isinstance(entry, dict):
@@ -308,6 +403,8 @@ def _run_materialize_only(
             ckpt_raw = ckpt["raw_params"][mname]
         elif isinstance(ckpt, dict) and mname in ckpt:
             ckpt_raw = ckpt.get(mname)
+        if contract is not None and ckpt_raw is None:
+            raise ValueError(f"checkpoint parameter missing for {mname}")
         if ckpt_raw is not None:
             try:
                 raw_param.data = ckpt_raw.to(raw_param.device)
@@ -323,13 +420,14 @@ def _run_materialize_only(
             )
             # override from checkpoint (v2 manifest or legacy) — safetensors aware
             ckpt_thr = None
-            if isinstance(ckpt, dict) and ckpt.get("schema_version") == 2 and "completed_manifest" in ckpt:
+            if isinstance(ckpt, dict) and ckpt.get("schema_version") == 3 and "completed_manifest" in ckpt:
                 for entry in ckpt.get("completed_manifest", []):
                     if entry.get("module") == mname:
                         rel = entry.get("file", "")
                         fpath = out / rel if rel else None
                         if fpath and fpath.exists():
                             try:
+                                _validate_state_manifest_entry(entry, fpath)
                                 if str(fpath).endswith(".safetensors"):
                                     from safetensors.torch import load_file as _load_sf2  # type: ignore[import]
 
@@ -345,7 +443,7 @@ def _run_materialize_only(
                     ckpt_thr = ckpt.get("current_raw_threshold")
             elif (
                 isinstance(ckpt, dict)
-                and ckpt.get("schema_version") == 2
+                and ckpt.get("schema_version") == 3
                 and "completed_module_params" in ckpt
                 and mname in ckpt["completed_module_params"]
             ):
@@ -380,6 +478,8 @@ def _run_materialize_only(
             ):
                 # synthetic single param
                 ckpt_thr = ckpt.get("raw_threshold")
+            if contract is not None and ckpt_thr is None:
+                raise ValueError(f"checkpoint threshold parameter missing for {mname}")
             if ckpt_thr is not None:
                 try:
                     raw_thr.data = ckpt_thr.to(raw_thr.device)
@@ -393,6 +493,17 @@ def _run_materialize_only(
                 codes = _htc_m(w.to(torch.float32), float(orig_scales[0].item()), float(thr_ratio_final[0].item()))
             else:
                 codes = _htc_m(w.to(torch.float32), orig_scales, thr_ratio_final, group_size=group_size)
+        elif soft_to_hard_enabled:
+            from openternary.quant.soft_ternary import harden_soft_codes
+
+            if scale_granularity == "per_tensor":
+                codes = harden_soft_codes(w.to(torch.float32), reference_scale=float(orig_scales[0].item()))
+            else:
+                codes = harden_soft_codes(
+                    w.to(torch.float32),
+                    reference_scale=orig_scales,
+                    group_size=group_size,
+                )
         per_module[mname] = {
             "codes": codes,
             "orig_scales": orig_scales,
@@ -452,7 +563,7 @@ def _run_materialize_only(
             data["materialize_checkpoint"] = str(ckpt_path)
             calib_path.write_text(_json2.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
         except Exception as e:
-            print(f"[materialize-only] warning: failed to update calibration.json: {e}", flush=True)
+            raise ValueError("materialize-only report could not be updated") from e
 
     return {
         "run_dir": str(out),
@@ -483,6 +594,8 @@ def run_calibration(
     _require_torch()
     if materialize_only:
         return _run_materialize_only(app_config, teacher_snapshot, output_dir, resume_from)
+    if teacher_snapshot is not None and not (pathlib.Path(teacher_snapshot) / "config.json").is_file():
+        raise FileNotFoundError(f"teacher snapshot missing: {teacher_snapshot}")
     # Handle --init-from via config or CLI
     if init_from is None:
         # also check config field
@@ -494,6 +607,10 @@ def run_calibration(
 
     out = _pl.Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
+    if not (resume or resume_from is not None) and (
+        (out / "calibration.json").exists() or (out / "artifacts/checkpoint").exists()
+    ):
+        raise ValueError("existing calibration run; use resume or a new output directory")
     # Save config
     import yaml
 
@@ -503,8 +620,9 @@ def run_calibration(
         cfg_dict = app_config.model_dump() if hasattr(app_config, "model_dump") else dict(app_config)
     except Exception:
         cfg_dict = {}
-    with open(cfg_path, "w", encoding="utf-8") as f:
-        yaml.safe_dump(cfg_dict, f, sort_keys=False, allow_unicode=True)
+    if not (resume or resume_from is not None):
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(cfg_dict, f, sort_keys=False, allow_unicode=True)
 
     calib_cfg = app_config.calibration
     # Validate window
@@ -570,7 +688,7 @@ def run_calibration(
             )
         except Exception as e:
             print(f"[vram] warning: failed to compute budget: {e}", flush=True)
-    run_calibration._peak_vram = 0
+    run_calibration._peak_vram = 0  # type: ignore[attr-defined]
 
     # Prepare activation cache dir
     cache_dir = out / "artifacts" / "activation_cache"
@@ -602,7 +720,11 @@ def run_calibration(
     requested_dataset = str(calib_cfg.dataset)
     try:
         texts, effective_dataset, dataset_fallback = get_calibration_texts(
-            requested_dataset, num_samples, seed, bool(calib_cfg.allow_dataset_fallback)
+            requested_dataset,
+            num_samples,
+            seed,
+            bool(calib_cfg.allow_dataset_fallback),
+            revision=str(calib_cfg.dataset_revision),
         )
     except (ImportError, RuntimeError, ValueError, OSError) as e:
         # loud error when fallback not allowed
@@ -655,8 +777,10 @@ def run_calibration(
     )
     # Helper is allowed for: no snapshot, or synthetic tiny fixture (fast CI)
     # Real path is required for wiki-tiny with snapshot (and for synthetic with large N if needed)
-    is_synthetic_tiny = requested_dataset == "synthetic" and num_samples <= 8 and int(calib_cfg.steps) <= 5
-    if not is_real_snapshot or is_synthetic_tiny:
+    is_synthetic_tiny = teacher_snapshot is None and effective_dataset == "synthetic"
+    if not is_real_snapshot:
+        if not is_synthetic_tiny:
+            raise ValueError("real calibration requires a teacher snapshot")
         # Synthetic tiny fixture or no snapshot — delegate to TEST ONLY helper (keeps real path clean)
         # Forbid wiki-tiny without snapshot unless fallback (already handled)
         if requested_dataset == "wiki-tiny" and is_real_snapshot and not is_synthetic_tiny:
@@ -690,6 +814,17 @@ def run_calibration(
 
     # Real path implementation
     # 1. Tokenizer (already resolved for hashes, but need batches for capture)
+    import os
+
+    test_overrides = [
+        name for name in ("OT_SKIP_MATERIALIZE", "OT_FORCE_ROCM", "OT_FORCE_LOW_BUDGET") if os.environ.get(name) == "1"
+    ]
+    if os.environ.get("OT_LIMIT_MODULES"):
+        test_overrides.append("OT_LIMIT_MODULES")
+    if test_overrides:
+        raise ValueError(f"test-only overrides forbidden in real calibration: {test_overrides}")
+    if contamination_train_smoke or contamination_held_smoke or contamination_train_held:
+        raise ValueError("calibration split overlap/contamination detected")
     if tokenizer is None:
         raise ValueError("real-model calibration requires tokenizer from teacher_snapshot")
 
@@ -747,9 +882,10 @@ def run_calibration(
         # temp limit for cache reuse test
         try:
             import os as _os
+
             _lim = _os.environ.get("OT_LIMIT_MODULES")
             if _lim:
-                target_module_names = target_module_names[:int(_lim)]
+                target_module_names = target_module_names[: int(_lim)]
                 print(f"[test] limiting to {int(_lim)}", flush=True)
         except Exception:
             pass
@@ -775,6 +911,19 @@ def run_calibration(
             and (_Q_ATTN2.search(n + ".weight") or _Q_MLP2.search(n + ".weight"))
         ]
 
+    # Respect the same configured target policy as quantize/materialize.
+    from openternary.quant.fake_quant import _classify_tensor
+
+    named_modules = dict(model.named_modules())
+    target_module_names = [
+        name
+        for name in target_module_names
+        if _classify_tensor(name + ".weight", list(named_modules[name].weight.shape), "BF16", app_config)[1]
+    ]
+    if not target_module_names:
+        raise ValueError("no quantizable targets enabled")
+    del named_modules
+
     # 3. Capture train and held activations to disk (sharded) — with fingerprint reuse
     from openternary.calibration.capture import DiskActivationCache, capture_teacher_pairs
 
@@ -789,7 +938,7 @@ def run_calibration(
         content_fingerprint: str | None = None,
         dataset_fingerprint: str | None = None,
         tokenizer_fingerprint: str | None = None,
-        capture_format_version: str = "v1",
+        capture_format_version: str = "v2-masked",
     ) -> str:
         """Activation cache fingerprint per spec section 8.
 
@@ -833,6 +982,39 @@ def run_calibration(
         h.update(capture_format_version.encode())
         return h.hexdigest()
 
+    def _cache_file_manifest(cache_path: pathlib.Path) -> list[dict[str, typing.Any]]:
+        return [
+            {
+                "file": path.relative_to(cache_path).as_posix(),
+                "size": path.stat().st_size,
+                "sha256": _sha256_file(path),
+            }
+            for path in sorted(cache_path.rglob("batch_*.pt"))
+        ]
+
+    def _validate_cache_manifest(cache_path: pathlib.Path, metadata: dict[str, typing.Any]) -> bool:
+        expected = metadata.get("files")
+        if not isinstance(expected, list) or not expected:
+            return False
+        actual_paths = {
+            path.relative_to(cache_path).as_posix(): path for path in sorted(cache_path.rglob("batch_*.pt"))
+        }
+        expected_paths = {entry.get("file") for entry in expected if isinstance(entry, dict)}
+        if set(actual_paths) != expected_paths:
+            return False
+        for entry in expected:
+            if not isinstance(entry, dict):
+                return False
+            relative_file = entry.get("file")
+            if not isinstance(relative_file, str):
+                return False
+            path = actual_paths.get(relative_file)
+            if path is None or path.stat().st_size != entry.get("size"):
+                return False
+            if _sha256_file(path) != entry.get("sha256"):
+                return False
+        return True
+
     # Helper to compute fingerprints for cache key
     _content_fp = _snapshot_content_fingerprint(teacher_snapshot)
     _dataset_fp = _dataset_fingerprint(str(effective_dataset), str(requested_dataset))
@@ -852,8 +1034,37 @@ def run_calibration(
         content_fingerprint=_content_fp,
         dataset_fingerprint=_dataset_fp,
         tokenizer_fingerprint=_tok_fp,
-        capture_format_version="v1",
+        capture_format_version="v2-masked",
     )
+    resume_contract = {
+        "cache_fingerprint": current_fp,
+        "source_fingerprint": _content_fp,
+        "calibration": calib_cfg.model_dump(),
+        "quantization": app_config.quantization.model_dump(),
+        "target_module_names": target_module_names,
+        "dtype": app_config.dtype,
+        "device": app_config.device,
+    }
+    if resume or resume_from is not None:
+        contract_checkpoint = pathlib.Path(resume_from) if resume_from is not None else _find_latest_checkpoint(out)
+        if contract_checkpoint is None:
+            raise FileNotFoundError("no resumable checkpoint found")
+        previous_contract = torch.load(str(contract_checkpoint), map_location="cpu", weights_only=True)
+        if previous_contract.get("resume_contract") != resume_contract:
+            raise ValueError("resume contract/fingerprint mismatch; legacy checkpoints require explicit recovery")
+
+    # Cross-directory resume carries forward the exact source cache. It is
+    # validated below before use; a missing or damaged source cache fails closed.
+    if resume_from is not None and not train_cache_dir.exists() and not held_cache_dir.exists():
+        import shutil as _resume_shutil
+
+        resume_checkpoint = _pl.Path(resume_from).resolve()
+        source_run = resume_checkpoint.parent.parent.parent
+        source_train = source_run / "artifacts" / "activation_cache_train"
+        source_held = source_run / "artifacts" / "activation_cache_held"
+        if source_train.exists() and source_held.exists() and source_run != out.resolve():
+            _resume_shutil.copytree(source_train, train_cache_dir)
+            _resume_shutil.copytree(source_held, held_cache_dir)
     reuse_possible = False
     reuse_source: pathlib.Path | None = None
     # Check init_from cache for reuse (Phase 4.1 → 4.2)
@@ -862,27 +1073,32 @@ def run_calibration(
         init_held = _pl.Path(str(init_from)) / "artifacts" / "activation_cache_held" / "fingerprint.json"
         if init_train.exists() and init_held.exists():
             try:
-                init_fp_train = json.loads(init_train.read_text(encoding="utf-8")).get("fingerprint", "")
-                init_fp_held = json.loads(init_held.read_text(encoding="utf-8")).get("fingerprint", "")
+                init_train_metadata = json.loads(init_train.read_text(encoding="utf-8"))
+                init_held_metadata = json.loads(init_held.read_text(encoding="utf-8"))
+                init_fp_train = init_train_metadata.get("fingerprint", "")
+                init_fp_held = init_held_metadata.get("fingerprint", "")
                 if init_fp_train == current_fp and init_fp_held == current_fp:
-                    # fingerprints match → reuse by copying
-                    print(f"[cache] Activation Cache: REUSED from --init-from {init_from}", flush=True)
-                    import shutil as _sh2
+                    source_train_cache = init_train.parent
+                    source_held_cache = init_held.parent
+                    source_integrity_ok = _validate_cache_manifest(
+                        source_train_cache, init_train_metadata
+                    ) and _validate_cache_manifest(source_held_cache, init_held_metadata)
+                    if source_integrity_ok:
+                        # fingerprints and every source shard match → reuse by copying
+                        print(f"[cache] Activation Cache: REUSED from --init-from {init_from}", flush=True)
+                        import shutil as _sh2
 
-                    if not train_cache_dir.exists() or not any(train_cache_dir.iterdir()):
-                        _sh2.copytree(
-                            _pl.Path(str(init_from)) / "artifacts" / "activation_cache_train",
-                            train_cache_dir,
-                            dirs_exist_ok=True,
+                        if not train_cache_dir.exists() or not any(train_cache_dir.iterdir()):
+                            _sh2.copytree(source_train_cache, train_cache_dir, dirs_exist_ok=True)
+                        if not held_cache_dir.exists() or not any(held_cache_dir.iterdir()):
+                            _sh2.copytree(source_held_cache, held_cache_dir, dirs_exist_ok=True)
+                        reuse_possible = True
+                        reuse_source = _pl.Path(str(init_from))
+                    else:
+                        print(
+                            "[cache] Activation Cache: INVALID (--init-from shard integrity mismatch), recapturing",
+                            flush=True,
                         )
-                    if not held_cache_dir.exists() or not any(held_cache_dir.iterdir()):
-                        _sh2.copytree(
-                            _pl.Path(str(init_from)) / "artifacts" / "activation_cache_held",
-                            held_cache_dir,
-                            dirs_exist_ok=True,
-                        )
-                    reuse_possible = True
-                    reuse_source = _pl.Path(str(init_from))
                 else:
                     print(
                         "[cache] Activation Cache: INVALID (fingerprint mismatch with --init-from), recapturing",
@@ -895,8 +1111,10 @@ def run_calibration(
     existing_fp_held = held_cache_dir / "fingerprint.json"
     if not reuse_possible and existing_fp_train.exists() and existing_fp_held.exists():
         try:
-            ef_train = json.loads(existing_fp_train.read_text(encoding="utf-8")).get("fingerprint", "")
-            ef_held = json.loads(existing_fp_held.read_text(encoding="utf-8")).get("fingerprint", "")
+            train_metadata = json.loads(existing_fp_train.read_text(encoding="utf-8"))
+            held_metadata = json.loads(existing_fp_held.read_text(encoding="utf-8"))
+            ef_train = train_metadata.get("fingerprint", "")
+            ef_held = held_metadata.get("fingerprint", "")
             # Need to ensure cache actually has data for all target modules
             train_layers = [p.name for p in train_cache_dir.iterdir() if p.is_dir() and p.name != "_fingerprint"]
             held_layers = [p.name for p in held_cache_dir.iterdir() if p.is_dir()]
@@ -904,7 +1122,17 @@ def run_calibration(
             has_all = all(layer_name in train_layers for layer_name in expected_layers) and all(
                 layer_name in held_layers for layer_name in expected_layers
             )
-            if ef_train == current_fp and ef_held == current_fp and has_all:
+            integrity_ok = _validate_cache_manifest(train_cache_dir, train_metadata) and _validate_cache_manifest(
+                held_cache_dir, held_metadata
+            )
+            if (
+                (resume or resume_from is not None)
+                and ef_train == current_fp
+                and ef_held == current_fp
+                and not integrity_ok
+            ):
+                raise ValueError("activation cache integrity failure: shard missing, changed, or unmanifested")
+            if ef_train == current_fp and ef_held == current_fp and has_all and integrity_ok:
                 print("[cache] Activation Cache: REUSED (existing output cache matches fingerprint)", flush=True)
                 reuse_possible = True
             else:
@@ -913,6 +1141,8 @@ def run_calibration(
                     flush=True,
                 )
         except Exception as e:
+            if resume or resume_from is not None:
+                raise ValueError(f"activation cache integrity failure: {e}") from e
             print(f"[cache] warning: fingerprint check failed: {e}", flush=True)
 
     if reuse_possible and reuse_source is not None or (reuse_possible and existing_fp_train.exists()):
@@ -946,21 +1176,25 @@ def run_calibration(
                 "target_module_names": sorted(target_module_names),
                 "target_module_count": len(target_module_names),
                 "dtype": _dtype_str,
-                "capture_format_version": "v1",
+                "capture_format_version": "v2-masked",
                 "tokenizer_fingerprint": _tok_fp,
                 "train_sample_hashes": train_hashes,
                 "held_sample_hashes": held_hashes,
             }
+            train_fp_meta = dict(_fp_meta)
+            train_fp_meta["files"] = _cache_file_manifest(train_cache_dir)
+            held_fp_meta = dict(_fp_meta)
+            held_fp_meta["files"] = _cache_file_manifest(held_cache_dir)
             (train_cache_dir / "fingerprint.json").write_text(
-                json.dumps(_fp_meta, indent=2),
+                json.dumps(train_fp_meta, indent=2),
                 encoding="utf-8",
             )
             (held_cache_dir / "fingerprint.json").write_text(
-                json.dumps(_fp_meta, indent=2),
+                json.dumps(held_fp_meta, indent=2),
                 encoding="utf-8",
             )
         except Exception as e:
-            print(f"[cache] warning: failed to save fingerprint: {e}", flush=True)
+            raise ValueError("activation cache integrity manifest could not be saved") from e
         # Unload Teacher
         del model
         try:
@@ -1014,6 +1248,12 @@ def run_calibration(
     threshold_ste_width = float(getattr(calib_cfg, "threshold_ste_width", 0.1))
     threshold_lr = getattr(calib_cfg, "threshold_lr", None)
     threshold_lr = float(threshold_lr) if threshold_lr is not None else float(calib_cfg.lr)
+    soft_to_hard_enabled = str(getattr(calib_cfg, "method", "recon-scale")) == "recon-soft-to-hard"
+    temperature_schedule = str(getattr(calib_cfg, "temperature_schedule", "linear"))
+    temperature_start = float(getattr(calib_cfg, "temperature_start", 1.0))
+    temperature_end = float(getattr(calib_cfg, "temperature_end", 0.05))
+    hard_fraction = float(getattr(calib_cfg, "hard_fraction", 0.1))
+    zero_logit_bias = float(getattr(calib_cfg, "zero_logit_bias", 0.0))
     # validation
     if threshold_enabled and not (threshold_eps < threshold_init_ratio < 1 - threshold_eps):
         raise ValueError(
@@ -1022,6 +1262,16 @@ def run_calibration(
     if threshold_enabled and str(getattr(calib_cfg, "method", "recon-scale")) not in ("recon-threshold", "recon-scale"):
         # allow recon-scale with threshold_enabled for backward compat, but warn
         pass
+    if soft_to_hard_enabled and threshold_enabled:
+        raise ValueError("recon-soft-to-hard requires threshold_enabled=false")
+    if soft_to_hard_enabled and (
+        not math.isfinite(temperature_start)
+        or not math.isfinite(temperature_end)
+        or temperature_start < temperature_end
+        or temperature_end <= 0
+        or not math.isfinite(zero_logit_bias)
+    ):
+        raise ValueError("invalid soft-to-hard temperature or zero_logit_bias configuration")
 
     # === Module-major (true sequential per-module optimization) per spec 7.1 ===
     # Steps are per-module: each target module runs `steps` optimizer steps independently.
@@ -1030,6 +1280,74 @@ def run_calibration(
     ckpt_interval = int(calib_cfg.checkpoint_interval)
     ckpt_dir = out / "artifacts" / "checkpoint"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+    def _soft_temperature(step_in_module: int) -> float:
+        from openternary.quant.soft_ternary import temperature_at_step
+
+        return temperature_at_step(
+            step_in_module,
+            steps_per_module,
+            start=temperature_start,
+            end=temperature_end,
+            schedule=typing.cast(typing.Any, temperature_schedule),
+            hard_fraction=hard_fraction,
+        )
+
+    def _soft_weight_hat(
+        weight: torch.Tensor,
+        reference: torch.Tensor,
+        effective: torch.Tensor,
+        step_in_module: int,
+    ) -> torch.Tensor:
+        from openternary.quant.soft_ternary import harden_soft_codes, soft_ternary_codes
+        from openternary.quant.threshold import _expand_per_group
+
+        reference_arg: float | torch.Tensor
+        soft_group_size: int | None
+        if scale_granularity == "per_tensor":
+            reference_arg = float(reference[0].item())
+            soft_group_size = None
+        else:
+            reference_arg = reference.to(weight.device)
+            soft_group_size = group_size
+        temperature = _soft_temperature(step_in_module)
+        if temperature == 0.0:
+            assignment = harden_soft_codes(
+                weight,
+                reference_scale=reference_arg,
+                group_size=soft_group_size,
+            ).to(torch.float32)
+        else:
+            assignment = soft_ternary_codes(
+                weight,
+                reference_scale=reference_arg,
+                group_size=soft_group_size,
+                temperature=temperature,
+                zero_logit_bias=zero_logit_bias,
+            )
+        if scale_granularity == "per_tensor":
+            return assignment * effective[0]
+        return assignment * _expand_per_group(effective, tuple(weight.shape), group_size)
+
+    def _hard_soft_codes(weight: torch.Tensor, reference: torch.Tensor) -> torch.Tensor:
+        from openternary.quant.soft_ternary import harden_soft_codes
+
+        if scale_granularity == "per_tensor":
+            return harden_soft_codes(weight, reference_scale=float(reference[0].item()))
+        return harden_soft_codes(weight, reference_scale=reference, group_size=group_size)
+
+    assignment_contract = {
+        "mode": "soft-to-hard" if soft_to_hard_enabled else ("threshold-ste" if threshold_enabled else "fixed"),
+        "trainable": False if soft_to_hard_enabled else None,
+        "hardening_source": "frozen-weight-midpoint" if soft_to_hard_enabled else None,
+        "hardening_uses_zero_logit_bias": False if soft_to_hard_enabled else None,
+        "temperature_schedule": temperature_schedule if soft_to_hard_enabled else None,
+        "temperature_start": temperature_start if soft_to_hard_enabled else None,
+        "temperature_end": temperature_end if soft_to_hard_enabled else None,
+        "hard_fraction": hard_fraction if soft_to_hard_enabled else None,
+        "zero_logit_bias": zero_logit_bias if soft_to_hard_enabled else None,
+        "final_state": "hard",
+    }
 
     # Warm start cache for init_from (Phase 4.1 -> 4.2)
     _init_completed: dict[str, dict[str, typing.Any]] = {}
@@ -1052,10 +1370,22 @@ def run_calibration(
             print(f"[init-from] warm start from {init_ckpt}", flush=True)
             try:
                 init_data = torch.load(str(init_ckpt), map_location="cpu")
+                if isinstance(init_data, dict) and init_data.get("schema_version") == 3:
+                    init_contract = init_data.get("resume_contract")
+                    if not isinstance(init_contract, dict):
+                        raise ValueError("init-from resume contract is missing")
+                    if init_contract.get("source_fingerprint") != _content_fp:
+                        raise ValueError("init-from source fingerprint mismatch")
+                    if init_contract.get("target_module_names") != target_module_names:
+                        raise ValueError("init-from target set mismatch")
+                    if init_contract.get("quantization") != app_config.quantization.model_dump():
+                        raise ValueError("init-from quantization contract mismatch")
+                    if init_contract.get("dtype") != app_config.dtype:
+                        raise ValueError("init-from dtype contract mismatch")
                 # v2 checkpoint: P0 manifest based (empty completed_module_params, need to load from calibration_state)
                 if (
                     isinstance(init_data, dict)
-                    and init_data.get("schema_version") == 2
+                    and init_data.get("schema_version") in (2, 3)
                     and "completed_manifest" in init_data
                 ):
                     manifest = init_data.get("completed_manifest", [])
@@ -1065,10 +1395,11 @@ def run_calibration(
                             mname_i = entry.get("module")
                             rel = entry.get("file", "")
                             if not mname_i or not rel:
-                                continue
+                                raise ValueError("init-from manifest entry is incomplete")
                             fpath = init_path / rel if rel else None
                             if fpath and fpath.exists():
                                 try:
+                                    _validate_state_manifest_entry(entry, fpath)
                                     if str(fpath).endswith(".safetensors"):
                                         from safetensors.torch import load_file as _load_sf_init  # type: ignore[import]
 
@@ -1080,13 +1411,19 @@ def run_calibration(
                                         "raw_threshold": payload_i.get("raw_threshold"),
                                     }
                                 except Exception as e:
-                                    print(f"[init-from] warning: failed to load {fpath}: {e}", flush=True)
+                                    raise ValueError(f"init-from state integrity/load failure: {fpath}") from e
                             else:
                                 # fallback try both extensions
                                 for ext in (".safetensors", ".pt"):
-                                    cand = init_path / "artifacts" / "calibration_state" / f"{mname_i.replace('.', '_').replace('/', '_')}{ext}"
+                                    cand = (
+                                        init_path
+                                        / "artifacts"
+                                        / "calibration_state"
+                                        / f"{mname_i.replace('.', '_').replace('/', '_')}{ext}"
+                                    )
                                     if cand.exists():
                                         try:
+                                            _validate_state_manifest_entry(entry, cand)
                                             if ext == ".safetensors":
                                                 from safetensors.torch import load_file as _load_sf_init2  # type: ignore[import]  # noqa: I001
 
@@ -1098,15 +1435,17 @@ def run_calibration(
                                                 "raw_threshold": payload_i.get("raw_threshold"),
                                             }
                                             break
-                                        except Exception:
-                                            continue
+                                        except Exception as e:
+                                            raise ValueError(f"init-from state integrity/load failure: {cand}") from e
+                                if mname_i not in _init_completed:
+                                    raise ValueError(f"init-from state missing: {mname_i}")
                         print(f"[init-from] loaded {len(_init_completed)} modules via manifest (P0)", flush=True)
                     else:
                         _init_completed = init_data.get("completed_module_params", {})
                         print(f"[init-from] loaded {len(_init_completed)} modules from v2 checkpoint", flush=True)
                 elif (
                     isinstance(init_data, dict)
-                    and init_data.get("schema_version") == 2
+                    and init_data.get("schema_version") in (2, 3)
                     and "completed_module_params" in init_data
                 ):
                     _init_completed = init_data.get("completed_module_params", {})
@@ -1128,15 +1467,22 @@ def run_calibration(
                     )
                 elif isinstance(init_data, dict) and "raw_param" in init_data:
                     # synthetic single
-                    print("[init-from] synthetic single param warm start (ignored for real path)", flush=True)
+                    raise ValueError("init-from synthetic single checkpoint is invalid for the real path")
                 else:
-                    print(f"[init-from] warning: unrecognized checkpoint format in {init_ckpt}", flush=True)
+                    raise ValueError(f"unrecognized init-from checkpoint format: {init_ckpt}")
             except Exception as e:
-                print(f"[init-from] warning: failed to load {init_ckpt}: {e}", flush=True)
+                if isinstance(e, ValueError) and str(e).startswith("init-from"):
+                    raise
+                raise ValueError(f"init-from checkpoint cannot be loaded: {init_ckpt}") from e
+
+            if set(_init_completed) != set(target_module_names):
+                missing = sorted(set(target_module_names) - set(_init_completed))
+                extra = sorted(set(_init_completed) - set(target_module_names))
+                raise ValueError(f"init-from target set mismatch: missing={missing[:3]} extra={extra[:3]}")
+            if any(state.get("raw_param") is None for state in _init_completed.values()):
+                raise ValueError("init-from state missing raw_param")
         else:
-            print(
-                f"[init-from] warning: no checkpoint found in {init_path}, using fresh init (threshold 0.5)", flush=True
-            )
+            raise FileNotFoundError(f"no init-from checkpoint found in {init_path}")
 
     # Checkpoint resume handling (v2 module-major with mid-module support)
     completed_module_params: dict[str, dict[str, typing.Any]] = {}
@@ -1161,6 +1507,8 @@ def run_calibration(
             _ckpt_path = sorted(cands_r)[-1]
         if _ckpt_path is not None:
             _resume_ckpt = torch.load(str(_ckpt_path), map_location="cpu")
+            if not isinstance(_resume_ckpt, dict) or _resume_ckpt.get("schema_version") != 3:
+                raise ValueError("checkpoint schema is not v3; audited conversion is required")
             # check threshold compatibility
             _ckpt_thr_enabled = bool(_resume_ckpt.get("threshold_enabled", False))
             if _ckpt_thr_enabled != threshold_enabled:
@@ -1168,8 +1516,8 @@ def run_calibration(
                     f"checkpoint threshold_enabled={_ckpt_thr_enabled} != current {threshold_enabled}. Use --init-from for cross-phase warm start, not --resume."
                 )
             # method check (warn if mismatch)
-            # schema v2 expected
-            if _resume_ckpt.get("schema_version") == 2:
+            # schema v3 expected
+            if _resume_ckpt.get("schema_version") == 3:
                 # P0: manifest based — completed modules stored as immutable files, not in checkpoint
                 completed_module_params = {}
                 manifest = _resume_ckpt.get("completed_manifest", [])
@@ -1180,8 +1528,15 @@ def run_calibration(
                         try:
                             _p = _pl.Path(resume_from)
                             # walk up to find run root containing artifacts/calibration_state
-                            for _anc in [_p.parent, _p.parent.parent, _p.parent.parent.parent, _p.parent.parent.parent.parent]:
-                                if (_anc / "artifacts" / "calibration_state").exists() or (_anc / "artifacts" / "checkpoint").exists():
+                            for _anc in [
+                                _p.parent,
+                                _p.parent.parent,
+                                _p.parent.parent.parent,
+                                _p.parent.parent.parent.parent,
+                            ]:
+                                if (_anc / "artifacts" / "calibration_state").exists() or (
+                                    _anc / "artifacts" / "checkpoint"
+                                ).exists():
                                     _source_run = _anc
                                     break
                             # fallback: if checkpoint is .../artifacts/checkpoint/step_*.pt, run dir is 3 levels up
@@ -1216,6 +1571,7 @@ def run_calibration(
                                 elif cand_p2.exists():
                                     fpath = cand_p2
                         if fpath.exists():
+                            _validate_state_manifest_entry(entry, fpath)
                             try:
                                 if str(fpath).endswith(".safetensors"):
                                     from safetensors.torch import load_file as _load_safetensors  # type: ignore[import]
@@ -1228,9 +1584,9 @@ def run_calibration(
                                     "raw_threshold": payload.get("raw_threshold"),
                                 }
                             except Exception as e:
-                                print(f"[resume] warning: failed to load {fpath}: {e}", flush=True)
+                                raise ValueError(f"completed state cannot be loaded: {fpath}") from e
                         else:
-                            print(f"[resume] warning: manifest file missing {fpath}", flush=True)
+                            raise ValueError(f"completed manifest file missing: {fpath}")
                 else:
                     # legacy aggregated checkpoint (pre-P0)
                     completed_module_params = dict(_resume_ckpt.get("completed_module_params", {}))
@@ -1241,23 +1597,48 @@ def run_calibration(
                 if start_step_in_module >= steps_per_module:
                     start_module_idx = int(mc.get("module_idx", 0)) + 1
                     start_step_in_module = 0
+                if not 0 <= start_module_idx <= len(target_module_names):
+                    raise ValueError("checkpoint target cursor out of range")
+                if set(completed_module_params) != set(target_module_names[:start_module_idx]):
+                    raise ValueError("completed manifest does not match target cursor")
+                for entry in completed_module_params.values():
+                    if entry.get("raw_param") is None or (threshold_enabled and entry.get("raw_threshold") is None):
+                        raise ValueError("completed manifest missing required parameters")
                 # restore loss_history / best
                 loss_history = list(_resume_ckpt.get("loss_history", []))
                 initial_loss = _resume_ckpt.get("initial_loss")
                 best_loss = _resume_ckpt.get("best_loss", float("inf"))
                 _resume_opt_state = _resume_ckpt.get("optimizer_state")
+                if start_step_in_module > 0:
+                    required_mid_module_state = ["current_raw_param", "optimizer_state", "rng_state"]
+                    if threshold_enabled:
+                        required_mid_module_state.append("current_raw_threshold")
+                    missing_mid_module_state = [
+                        key for key in required_mid_module_state if _resume_ckpt.get(key) is None
+                    ]
+                    if missing_mid_module_state:
+                        raise ValueError(
+                            "mid-module checkpoint missing transaction state: " + ", ".join(missing_mid_module_state)
+                        )
                 # sanity: if resume checkpoint already completed some modules, ensure start index within range
                 print(
-                    f"[resume] v2 checkpoint {_ckpt_path} cursor module_idx={start_module_idx} step={start_step_in_module} completed={len(completed_module_params)}",
+                    f"[resume] v3 checkpoint {_ckpt_path} cursor module_idx={start_module_idx} step={start_step_in_module} completed={len(completed_module_params)}",
                     flush=True,
                 )
-                # restore RNG if present
-                try:
-                    rng_state = _resume_ckpt.get("rng_state")
-                    if rng_state is not None:
+                # A mid-module resume must restore RNG exactly; terminal checkpoints
+                # may omit it because no interrupted update remains to reproduce.
+                rng_state = _resume_ckpt.get("rng_state")
+                if rng_state is not None:
+                    try:
                         torch.set_rng_state(rng_state)
-                except Exception:
-                    pass
+                    except Exception as exc:
+                        raise ValueError("checkpoint rng_state cannot be restored") from exc
+                cuda_rng_state = _resume_ckpt.get("cuda_rng_state_all")
+                if cuda_rng_state is not None and torch.cuda.is_available():
+                    try:
+                        torch.cuda.set_rng_state_all(cuda_rng_state)
+                    except Exception as exc:
+                        raise ValueError("checkpoint cuda_rng_state_all cannot be restored") from exc
             else:
                 # legacy v1 checkpoint: global step, raw_params for all modules
                 # For compatibility, treat as if all modules were jointly optimized and convert to completed
@@ -1286,7 +1667,9 @@ def run_calibration(
                     start_module_idx = 0
                     start_step_in_module = 0
 
-    from openternary.calibration.losses import mse_loss as _mse
+    from openternary.calibration.losses import backward_reconstruction, l1_loss, mse_loss
+
+    _mse = l1_loss if calib_cfg.loss == "l1" else mse_loss
     from openternary.calibration.optimizer import get_effective_scales as _get_eff
     from openternary.quant.grouping import GroupwiseResult as _GWRes
     from openternary.quant.grouping import dequantize_groupwise as _degw
@@ -1298,7 +1681,7 @@ def run_calibration(
     def _sanitize_mname(name: str) -> str:
         return name.replace(".", "_").replace("/", "_")
 
-    # Helper to save v2 checkpoint (manifest based, P0 fix: immutable per-module safetensors)
+    # Helper to save v3 checkpoint (manifest based, immutable per-module state with hashes)
     def _save_v2_checkpoint(
         module_idx: int,
         module_name: str,
@@ -1356,20 +1739,26 @@ def run_calibration(
         mod_path = ckpt_dir / f"module_{module_idx:05d}.pt"
         step_path = ckpt_dir / f"step_{global_step:05d}.pt"
         # Build manifest (no tensors) — list of completed module names with state file existence (P0: .safetensors)
-        completed_manifest: list[dict[str, str]] = []
-        for k in completed_module_params:
+        completed_manifest: list[dict[str, typing.Any]] = []
+        manifest_names = list(completed_module_params)
+        if is_module_done and module_name not in manifest_names:
+            manifest_names.append(module_name)
+        for k in manifest_names:
             # Check actual file existence to decide extension (safetensors preferred, pt fallback)
             safep = calibration_state_dir / f"{_sanitize_mname(k)}.safetensors"
             ptp = calibration_state_dir / f"{_sanitize_mname(k)}.pt"
             if safep.exists():
                 fname = f"artifacts/calibration_state/{_sanitize_mname(k)}.safetensors"
+                state_path = safep
             elif ptp.exists():
                 fname = f"artifacts/calibration_state/{_sanitize_mname(k)}.pt"
+                state_path = ptp
             else:
-                fname = f"artifacts/calibration_state/{_sanitize_mname(k)}.safetensors"
-            completed_manifest.append({"module": k, "file": fname})
+                raise ValueError(f"checkpoint state missing before manifest write: {k}")
+            completed_manifest.append(_state_manifest_entry(k, fname, state_path))
         ckpt_save: dict[str, typing.Any] = {
-            "schema_version": 2,
+            "schema_version": 3,
+            "resume_contract": resume_contract,
             "method": str(calib_cfg.method),
             "module_cursor": {
                 "module_idx": module_idx if not is_module_done else module_idx + 1,
@@ -1388,6 +1777,14 @@ def run_calibration(
             "scale_granularity": scale_granularity,
             "threshold_eps": threshold_eps,
             "threshold_ste_width": threshold_ste_width,
+            "assignment": {
+                **assignment_contract,
+                "next_temperature": (
+                    _soft_temperature(step_in_module)
+                    if soft_to_hard_enabled and not is_module_done and step_in_module < steps_per_module
+                    else None
+                ),
+            },
         }
         if optimizer_state is not None:
             ckpt_save["optimizer_state"] = optimizer_state
@@ -1400,8 +1797,9 @@ def run_calibration(
         ckpt_save["step"] = global_step
         ckpt_save["loss"] = loss_val
         # Include RNG state for determinism
-        with contextlib.suppress(Exception):
-            ckpt_save["rng_state"] = torch.get_rng_state()
+        ckpt_save["rng_state"] = torch.get_rng_state()
+        if torch.cuda.is_available():
+            ckpt_save["cuda_rng_state_all"] = torch.cuda.get_rng_state_all()
         # Save atomically via temp file to avoid partial zip (Windows antivirus / concurrent read)
         tmp_step = step_path.with_suffix(step_path.suffix + ".tmp")
         torch.save(ckpt_save, str(tmp_step))
@@ -1427,6 +1825,11 @@ def run_calibration(
     # Sequential per-module optimization (bounded memory)
     import gc as _gc
 
+    runtime_module_records: list[dict[str, typing.Any]] = []
+    total_oom_retries = 0
+    minimum_microbatch_used: int | None = None
+    initial_microbatch_max = 0
+
     for module_idx, mname in enumerate(target_module_names):
         if module_idx < start_module_idx:
             continue
@@ -1436,9 +1839,7 @@ def run_calibration(
         # Load weight on demand (bounded)
         w = _load_weight(mname)
         if w is None:
-            # Skip non-quantizable or missing weight, but still need to mark as completed with empty?
-            print(f"[module-major] skip {mname}: weight not found", flush=True)
-            continue
+            raise ValueError(f"target weight missing: {mname}")
         w_f32 = w.to(torch.float32)
         # Quantize to get codes/orig_scales
         if scale_granularity == "per_tensor":
@@ -1484,44 +1885,49 @@ def run_calibration(
                 ic = _init_completed[mname]
                 if "raw_param" in ic and ic["raw_param"] is not None:
                     raw_param.data = ic["raw_param"].to(raw_param.device)
-                if threshold_enabled and raw_thr is not None and "raw_threshold" in ic and ic["raw_threshold"] is not None:
+                if (
+                    threshold_enabled
+                    and raw_thr is not None
+                    and "raw_threshold" in ic
+                    and ic["raw_threshold"] is not None
+                ):
                     raw_thr.data = ic["raw_threshold"].to(raw_thr.device)
                 print(f"[init-from] warm start applied for {mname}", flush=True)
             except Exception as e:
-                print(f"[init-from] warning: failed to warm start {mname}: {e}", flush=True)
+                raise ValueError(f"init-from state cannot be applied for {mname}") from e
 
         # Resume mid-module: restore current params if this is the resume module
         is_resume_active = module_idx == start_module_idx and start_step_in_module > 0 and _resume_ckpt is not None
         if is_resume_active:
-            # Try to restore current_raw_param/threshold from checkpoint
-            try:
-                assert _resume_ckpt is not None
-                cur_raw = _resume_ckpt.get("current_raw_param")
-                if cur_raw is not None:
-                    raw_param.data = cur_raw.to(raw_param.device)
-                cur_thr = _resume_ckpt.get("current_raw_threshold")
-                if threshold_enabled and raw_thr is not None and cur_thr is not None:
-                    raw_thr.data = cur_thr.to(raw_thr.device)
-                print(f"[resume] restored mid-module {mname} step {start_step_in_module}", flush=True)
-            except Exception as e:
-                print(f"[resume] warning: failed to restore {mname}: {e}", flush=True)
+            assert _resume_ckpt is not None
+            cur_raw = _resume_ckpt["current_raw_param"]
+            if not isinstance(cur_raw, torch.Tensor) or cur_raw.shape != raw_param.shape:
+                raise ValueError(f"checkpoint current_raw_param is invalid for {mname}")
+            raw_param.data.copy_(cur_raw.to(device=raw_param.device, dtype=raw_param.dtype))
+            if threshold_enabled and raw_thr is not None:
+                cur_thr = _resume_ckpt["current_raw_threshold"]
+                if not isinstance(cur_thr, torch.Tensor) or cur_thr.shape != raw_thr.shape:
+                    raise ValueError(f"checkpoint current_raw_threshold is invalid for {mname}")
+                raw_thr.data.copy_(cur_thr.to(device=raw_thr.device, dtype=raw_thr.dtype))
+            print(f"[resume] restored mid-module {mname} step {start_step_in_module}", flush=True)
 
         # Create local Adam for this module only (bounded)
+        optimizer_class = torch.optim.SGD if calib_cfg.optimizer == "sgd" else torch.optim.Adam
         if threshold_enabled:
             assert raw_thr is not None
-            optimizer = torch.optim.Adam(
+            optimizer = optimizer_class(
                 [
                     {"params": [raw_param], "lr": float(calib_cfg.lr)},
                     {"params": [raw_thr], "lr": threshold_lr},
                 ]
             )
         else:
-            optimizer = torch.optim.Adam([raw_param], lr=float(calib_cfg.lr))
+            optimizer = optimizer_class([raw_param], lr=float(calib_cfg.lr))
         if is_resume_active and _resume_opt_state is not None:
             try:
                 optimizer.load_state_dict(_resume_opt_state)
             except Exception as e:
-                print(f"[resume] warning: failed to load optimizer_state for {mname}: {e}", flush=True)
+                raise ValueError(f"checkpoint optimizer_state cannot be restored for {mname}") from e
 
         # Determine start step for this module (0 or resumed offset)
         step_start = start_step_in_module if module_idx == start_module_idx else 0
@@ -1559,12 +1965,12 @@ def run_calibration(
                     _use_gpu = True
                     _gpu_device = "cuda:0"
                     print(
-                        f"[vram] module={module_idx+1}/{len(target_module_names)} {mname} budget={format_bytes(_vram_budget.budget_bytes)} free={format_bytes(int(fb))} total={format_bytes(int(tb))}",
+                        f"[vram] module={module_idx + 1}/{len(target_module_names)} {mname} budget={format_bytes(_vram_budget.budget_bytes)} free={format_bytes(int(fb))} total={format_bytes(int(tb))}",
                         flush=True,
                     )
                 else:
                     print(
-                        f"[vram] module={module_idx+1}/{len(target_module_names)} {mname} budget too low {format_bytes(_vram_budget.budget_bytes)} -> cpu",
+                        f"[vram] module={module_idx + 1}/{len(target_module_names)} {mname} budget too low {format_bytes(_vram_budget.budget_bytes)} -> cpu",
                         flush=True,
                     )
             except Exception as e:
@@ -1576,6 +1982,11 @@ def run_calibration(
         _bf16_ok = bool(backend_info.bf16_supported and _use_gpu and _real_gpu)
         # microbatch sizes to try
         n_batches_probe = train_cache.count_batches(mname.replace(".", "_"))
+        total_train_elements = sum(
+            train_cache.load_valid(mname, i)["teacher_output"].numel() for i in range(n_batches_probe)
+        )
+        if total_train_elements == 0:
+            raise ValueError(f"no valid activation elements for {mname}")
         _initial_mb = int(n_batches_probe) if n_batches_probe > 0 else 1
         if _initial_mb <= 0:
             _initial_mb = 1
@@ -1615,14 +2026,194 @@ def run_calibration(
         _module_done_on_gpu = False
         _fallback_to_cpu = False
         _chosen_mb = _mb_candidates[0] if _mb_candidates else 1
+        initial_microbatch_max = max(initial_microbatch_max, _chosen_mb)
+
+        # Transactional GPU path. Every logical optimizer update is isolated:
+        # OOM restores params, optimizer moments, RNG, and metric history before
+        # retrying that same step with a smaller microbatch.
         if _use_gpu:
+            if _gpu_device == "cuda:0" and _real_gpu:
+                raw_param.data = raw_param.data.to(_gpu_device)
+                zero_mask_t = zero_mask_t.to(_gpu_device)  # type: ignore[assignment]
+                if threshold_enabled and raw_thr is not None:
+                    raw_thr.data = raw_thr.data.to(_gpu_device)
+
+            params_for_transaction = [raw_param]
+            if threshold_enabled and raw_thr is not None:
+                params_for_transaction.append(raw_thr)
+            mb_index = 0
+            module_oom_retries = 0
+
+            for step_in_mod in range(step_start, steps_per_module):
+                while True:
+                    _chosen_mb = _mb_candidates[mb_index]
+                    minimum_microbatch_used = (
+                        _chosen_mb if minimum_microbatch_used is None else min(minimum_microbatch_used, _chosen_mb)
+                    )
+                    print(
+                        f"[vram] microbatch={_chosen_mb} for {mname} step={step_in_mod + 1}/{steps_per_module}",
+                        flush=True,
+                    )
+                    transaction = _capture_optimizer_transaction(params_for_transaction, optimizer)
+                    history_len = len(loss_history)
+                    previous_initial = initial_loss
+                    previous_best = best_loss
+                    try:
+                        optimizer.zero_grad(set_to_none=True)
+                        n_batches = train_cache.count_batches(mname.replace(".", "_"))
+                        if n_batches == 0:
+                            raise ValueError(f"no activation batches for {mname}")
+                        step_loss_val = 0.0
+                        weight_tensor_local = w_f32.to(_gpu_device) if _real_gpu else w_f32
+
+                        for chunk_start in range(0, n_batches, _chosen_mb):
+                            chunk_end = min(chunk_start + _chosen_mb, n_batches)
+                            chunk = [train_cache.load_valid(mname, idx) for idx in range(chunk_start, chunk_end)]
+                            inp = torch.cat([item["input"] for item in chunk], dim=0)
+                            tout = torch.cat([item["teacher_output"] for item in chunk], dim=0)
+                            if _real_gpu:
+                                input_dtype = torch.bfloat16 if _bf16_ok else torch.float32
+                                inp_dev = inp.to(_gpu_device, dtype=input_dtype)
+                                tout_dev = tout.to(_gpu_device, dtype=torch.float32)
+                            else:
+                                inp_dev = inp.to(torch.float32)
+                                tout_dev = tout.to(torch.float32)
+
+                            eff = _get_eff(raw_param, zero_mask_t)
+                            if threshold_enabled:
+                                assert raw_thr is not None
+                                from openternary.quant.threshold import _expand_per_group as _exp_thr
+                                from openternary.quant.threshold import ste_threshold_codes as _ste_codes
+
+                                _transaction_thr_ratio = get_effective_threshold_ratio(raw_thr, eps=threshold_eps)
+                                if scale_granularity == "per_tensor":
+                                    codes_ste = _ste_codes(
+                                        weight_tensor_local,
+                                        float(reference_scales[0].item()),
+                                        _transaction_thr_ratio[0].view(1),
+                                        ste_width=threshold_ste_width,
+                                    )
+                                    w_hat = codes_ste * eff[0]
+                                else:
+                                    ref_local = reference_scales.to(_gpu_device) if _real_gpu else reference_scales
+                                    codes_ste = _ste_codes(
+                                        weight_tensor_local,
+                                        ref_local,
+                                        _transaction_thr_ratio,
+                                        group_size=group_size,
+                                        ste_width=threshold_ste_width,
+                                    )
+                                    w_hat = codes_ste * _exp_thr(eff, tuple(weight_tensor_local.shape), group_size)
+                            elif soft_to_hard_enabled:
+                                w_hat = _soft_weight_hat(
+                                    weight_tensor_local,
+                                    reference_scales,
+                                    eff,
+                                    step_in_mod,
+                                )
+                            elif scale_granularity == "per_tensor":
+                                code_local = codes.to(_gpu_device) if _real_gpu else codes
+                                w_hat = code_local.to(torch.float32) * eff[0]
+                            else:
+                                res_tmp = _GWRes(
+                                    codes=codes.to(_gpu_device) if _real_gpu else codes,
+                                    scales=eff,
+                                    shape=tuple(w.shape),
+                                    orig_dtype=str(w.dtype),
+                                    group_size=group_size,
+                                    grouping_scheme="last-dim-rowwise-v1",
+                                )
+                                w_hat = _degw(res_tmp)
+
+                            try:
+                                if _bf16_ok and _real_gpu:
+                                    y_hat = F.linear(inp_dev, w_hat.to(torch.bfloat16))  # type: ignore[union-attr]
+                                else:
+                                    y_hat = F.linear(  # type: ignore[union-attr]
+                                        inp_dev.to(torch.float32), w_hat.to(torch.float32)
+                                    )
+                            except Exception as linear_error:
+                                if _bf16_ok and _real_gpu and "bf16" in str(linear_error).lower():
+                                    y_hat = F.linear(  # type: ignore[union-attr]
+                                        inp_dev.to(torch.float32), w_hat.to(torch.float32)
+                                    )
+                                else:
+                                    raise
+                            step_loss_val += backward_reconstruction(
+                                tout_dev, y_hat, total_train_elements, str(calib_cfg.loss)
+                            )
+
+                        optimizer.step()
+                    except Exception as error:
+                        if not is_oom_error(error):
+                            raise
+                        _restore_optimizer_transaction(transaction, params_for_transaction, optimizer)
+                        del loss_history[history_len:]
+                        initial_loss = previous_initial
+                        best_loss = previous_best
+                        optimizer.zero_grad(set_to_none=True)
+                        if torch.cuda.is_available():
+                            with contextlib.suppress(Exception):
+                                torch.cuda.empty_cache()
+                        if not _micro_auto or mb_index + 1 >= len(_mb_candidates):
+                            raise RuntimeError(
+                                "OOM: minimum microbatch exhausted; state restored to the start of the failed step"
+                            ) from error
+                        previous_mb = _chosen_mb
+                        mb_index += 1
+                        module_oom_retries += 1
+                        total_oom_retries += 1
+                        print(
+                            f"[vram] OOM rollback complete; retrying same step microbatch={previous_mb}->{_mb_candidates[mb_index]}",
+                            flush=True,
+                        )
+                        continue
+
+                    if initial_loss is None:
+                        initial_loss = step_loss_val
+                    best_loss = min(best_loss, step_loss_val)
+                    loss_history.append(step_loss_val)
+                    if (step_in_mod + 1) % ckpt_interval == 0 or (step_in_mod + 1) == steps_per_module:
+                        _save_v2_checkpoint(
+                            module_idx,
+                            mname,
+                            step_in_mod + 1,
+                            step_loss_val,
+                            optimizer.state_dict(),
+                            current_raw=raw_param.detach().cpu(),
+                            current_thr=raw_thr.detach().cpu() if threshold_enabled and raw_thr is not None else None,
+                            is_module_done=(step_in_mod + 1) == steps_per_module,
+                        )
+                    break
+
+            _module_done_on_gpu = True
+            runtime_module_records.append(
+                {
+                    "module": mname,
+                    "initial_microbatch": _mb_candidates[0],
+                    "selected_microbatch": _chosen_mb,
+                    "oom_retries": module_oom_retries,
+                    "device": _gpu_device if _real_gpu else "simulated-gpu-path",
+                }
+            )
+
+        # Legacy branch retained only as an unreachable compatibility guard while
+        # the transactional path is exercised by production tests.
+        if _use_gpu and not _module_done_on_gpu:
             for _mb_try in _mb_candidates:
                 _chosen_mb = _mb_try
-                print(f"[vram] microbatch={_mb_try} for {mname} (try { _mb_candidates.index(_mb_try)+1}/{len(_mb_candidates)})", flush=True)
+                print(
+                    f"[vram] microbatch={_mb_try} for {mname} (try {_mb_candidates.index(_mb_try) + 1}/{len(_mb_candidates)})",
+                    flush=True,
+                )
                 # For intentional low budget test, force OOM on first try
                 import os as _os3
 
-                if _os3.environ.get("OT_FORCE_LOW_BUDGET") == "1" and _mb_try == _mb_candidates[0] and len(_mb_candidates) > 1:
+                if (
+                    _os3.environ.get("OT_FORCE_LOW_BUDGET") == "1"
+                    and _mb_try == _mb_candidates[0]
+                    and len(_mb_candidates) > 1
+                ):
                     print(f"[vram] OOM → retry microbatch {_mb_try} -> {_mb_candidates[1]} (forced)", flush=True)
                     continue
                 try:
@@ -1653,7 +2244,7 @@ def run_calibration(
                         if n_batches == 0:
                             print(f"[module-major] warning: no batches for {mname}, skipping", flush=True)
                             break
-                        module_losses: list[torch.Tensor] = []
+                        step_loss_val = 0.0
                         weight_tensor_local = w_f32.to(_gpu_device) if (_use_gpu and _real_gpu) else w_f32
                         # thr ratio on device
                         thr_ratio_local = None
@@ -1666,9 +2257,8 @@ def run_calibration(
                         # For now chunk by microbatch size: process in groups
                         for chunk_start in range(0, n_batches, _mb_try):
                             chunk_end = min(chunk_start + _mb_try, n_batches)
-                            chunk_losses: list[torch.Tensor] = []
                             for b_idx in range(chunk_start, chunk_end):
-                                data = train_cache.load(mname, b_idx)
+                                data = train_cache.load_valid(mname, b_idx)
                                 inp = data["input"]
                                 tout = data["teacher_output"]
                                 # move activation to device with BF16 if possible
@@ -1685,6 +2275,9 @@ def run_calibration(
                                     tout_dev = tout
                                 # effective scale on device
                                 eff = _get_eff(raw_param, zero_mask_t)
+                                if threshold_enabled:
+                                    assert raw_thr is not None
+                                    thr_ratio_local = get_effective_threshold_ratio(raw_thr, eps=threshold_eps)
                                 if _use_gpu and _real_gpu:
                                     eff = eff.to(_gpu_device)  # type: ignore[union-attr]
                                 if threshold_enabled:
@@ -1696,16 +2289,30 @@ def run_calibration(
                                         thr_s = thr_ratio_local[0].view(1)
                                         ref_s = float(reference_scales[0].item())
                                         # weight on device
-                                        wt_dev = weight_tensor_local.to(_gpu_device) if (_use_gpu and _real_gpu) else weight_tensor_local  # type: ignore[union-attr]
+                                        wt_dev = (
+                                            weight_tensor_local.to(_gpu_device)
+                                            if (_use_gpu and _real_gpu)
+                                            else weight_tensor_local
+                                        )  # type: ignore[union-attr]
                                         codes_ste = _ste_codes(wt_dev, ref_s, thr_s, ste_width=threshold_ste_width)
                                         # w_hat in BF16 if possible
                                         if _bf16_ok and _use_gpu and _real_gpu:
-                                            w_hat = (codes_ste.to(torch.bfloat16) * eff[0].to(torch.bfloat16)).to(torch.float32)  # type: ignore[union-attr]
+                                            w_hat = (codes_ste.to(torch.bfloat16) * eff[0].to(torch.bfloat16)).to(
+                                                torch.float32
+                                            )  # type: ignore[union-attr]
                                         else:
                                             w_hat = codes_ste * eff[0]
                                     else:
-                                        wt_dev = weight_tensor_local.to(_gpu_device) if (_use_gpu and _real_gpu) else weight_tensor_local  # type: ignore[union-attr]
-                                        ref_dev = reference_scales.to(_gpu_device) if (_use_gpu and _real_gpu) else reference_scales  # type: ignore[union-attr]
+                                        wt_dev = (
+                                            weight_tensor_local.to(_gpu_device)
+                                            if (_use_gpu and _real_gpu)
+                                            else weight_tensor_local
+                                        )  # type: ignore[union-attr]
+                                        ref_dev = (
+                                            reference_scales.to(_gpu_device)
+                                            if (_use_gpu and _real_gpu)
+                                            else reference_scales
+                                        )  # type: ignore[union-attr]
                                         codes_ste = _ste_codes(
                                             wt_dev,
                                             ref_dev,
@@ -1719,9 +2326,20 @@ def run_calibration(
                                         else:
                                             eff_exp = _exp_thr(eff, tuple(wt_dev.shape), group_size)
                                             w_hat = codes_ste * eff_exp
+                                elif soft_to_hard_enabled:
+                                    w_hat = _soft_weight_hat(
+                                        weight_tensor_local,
+                                        reference_scales,
+                                        eff,
+                                        step_in_mod,
+                                    )
                                 else:
                                     if scale_granularity == "per_tensor":
-                                        w_hat = codes.to(_gpu_device).to(torch.float32) * eff[0] if (_use_gpu and _real_gpu) else codes.to(torch.float32) * eff[0]  # type: ignore[union-attr]
+                                        w_hat = (
+                                            codes.to(_gpu_device).to(torch.float32) * eff[0]
+                                            if (_use_gpu and _real_gpu)
+                                            else codes.to(torch.float32) * eff[0]
+                                        )  # type: ignore[union-attr]
                                     else:
                                         res_tmp = _GWRes(
                                             codes=codes.to(_gpu_device) if (_use_gpu and _real_gpu) else codes,  # type: ignore[union-attr]
@@ -1746,17 +2364,9 @@ def run_calibration(
                                         y_hat = F.linear(inp_dev.to(torch.float32), w_hat.to(torch.float32))  # type: ignore[union-attr]
                                     else:
                                         raise
-                                loss = _mse(tout_dev, y_hat)
-                                chunk_losses.append(loss)
-                            module_losses.extend(chunk_losses)
-                        if module_losses:
-                            torch.stack(module_losses).mean().backward()
-                        # Compute step loss for logging (mean of detached)
-                        step_loss_val = (
-                            float(torch.stack([lv.detach() for lv in module_losses]).mean().item())
-                            if module_losses
-                            else 0.0
-                        )
+                                step_loss_val += backward_reconstruction(
+                                    tout_dev, y_hat, total_train_elements, str(calib_cfg.loss)
+                                )
                         if initial_loss is None:
                             initial_loss = step_loss_val
                         best_loss = min(best_loss, step_loss_val)
@@ -1766,7 +2376,9 @@ def run_calibration(
                         if (step_in_mod + 1) % ckpt_interval == 0 or (step_in_mod + 1) == steps_per_module:
                             # need to save current raw on cpu for checkpoint (ensure cpu)
                             _save_raw_cpu = raw_param.detach().cpu()
-                            _save_thr_cpu = raw_thr.detach().cpu() if threshold_enabled and raw_thr is not None else None
+                            _save_thr_cpu = (
+                                raw_thr.detach().cpu() if threshold_enabled and raw_thr is not None else None
+                            )
                             _save_v2_checkpoint(
                                 module_idx,
                                 mname,
@@ -1794,32 +2406,11 @@ def run_calibration(
                     break
                 except Exception as e:
                     if is_oom_error(e):
-                        print(f"[vram] OOM → retry microbatch {_mb_try} -> { _mb_candidates[_mb_candidates.index(_mb_try)+1] if _mb_candidates.index(_mb_try)+1 < len(_mb_candidates) else 'cpu fallback'} : {e}", flush=True)
-                        # clear temp
-                        try:  # noqa: SIM105
-                            del module_losses  # type: ignore[no-redef]
-                        except Exception:
-                            pass
-                        try:
-                            import gc as _gc2
-
-                            _gc2.collect()
-                            if torch is not None and torch.cuda.is_available():
-                                torch.cuda.empty_cache()  # type: ignore[union-attr]
-                        except Exception:
-                            pass
-                        # rollback optimizer step not done, zero grad
-                        with contextlib.suppress(Exception):
-                            optimizer.zero_grad()
-                        # move raw back to cpu for next try (if we moved)
-                        try:
-                            raw_param.data = raw_param.data.to("cpu")
-                            if threshold_enabled and raw_thr is not None:
-                                raw_thr.data = raw_thr.data.to("cpu")
-                            zero_mask_t = zero_mask_t.to("cpu")  # type: ignore[assignment]
-                        except Exception:
-                            pass
-                        continue
+                        optimizer.zero_grad(set_to_none=True)
+                        raise RuntimeError(
+                            "OOM: calibration stopped without retrying partially updated state. "
+                            "Resume from the last durable checkpoint after reviewing memory requirements."
+                        ) from e
                     else:
                         raise
             if not _module_done_on_gpu:
@@ -1842,16 +2433,19 @@ def run_calibration(
                 if n_batches == 0:
                     print(f"[module-major] warning: no batches for {mname}, skipping", flush=True)
                     break
-                module_losses: list[torch.Tensor] = []
+                step_loss_val = 0.0
                 weight_tensor_local = w_f32
                 thr_ratio_local = None
                 if threshold_enabled:
                     thr_ratio_local = get_effective_threshold_ratio(raw_thr, eps=threshold_eps)  # type: ignore[arg-type]
                 for b_idx in range(n_batches):
-                    data = train_cache.load(mname, b_idx)
+                    data = train_cache.load_valid(mname, b_idx)
                     inp = data["input"]
                     tout = data["teacher_output"]
                     eff = _get_eff(raw_param, zero_mask_t)
+                    if threshold_enabled:
+                        assert raw_thr is not None
+                        thr_ratio_local = get_effective_threshold_ratio(raw_thr, eps=threshold_eps)
                     if threshold_enabled:
                         assert thr_ratio_local is not None
                         from openternary.quant.threshold import _expand_per_group as _exp_thr
@@ -1872,6 +2466,13 @@ def run_calibration(
                             )
                             eff_exp = _exp_thr(eff, tuple(weight_tensor_local.shape), group_size)
                             w_hat = codes_ste * eff_exp
+                    elif soft_to_hard_enabled:
+                        w_hat = _soft_weight_hat(
+                            weight_tensor_local,
+                            reference_scales,
+                            eff,
+                            step_in_mod,
+                        )
                     else:
                         if scale_granularity == "per_tensor":
                             w_hat = codes.to(torch.float32) * eff[0]
@@ -1886,15 +2487,7 @@ def run_calibration(
                             )
                             w_hat = _degw(res_tmp)
                     y_hat = F.linear(inp.to(torch.float32), w_hat.to(torch.float32))  # type: ignore[union-attr]
-                    loss = _mse(tout, y_hat)
-                    module_losses.append(loss)
-                if module_losses:
-                    torch.stack(module_losses).mean().backward()
-                step_loss_val = (
-                    float(torch.stack([loss_val.detach() for loss_val in module_losses]).mean().item())
-                    if module_losses
-                    else 0.0
-                )
+                    step_loss_val += backward_reconstruction(tout, y_hat, total_train_elements, str(calib_cfg.loss))
                 if initial_loss is None:
                     initial_loss = step_loss_val
                 best_loss = min(best_loss, step_loss_val)
@@ -1983,9 +2576,8 @@ def run_calibration(
             _resume_opt_state = None
             continue  # next module, skip the rest of original flow that would duplicate
 
-
         # After module steps, finalize and store completed params (bounded release preparation)
-        final_entry: dict[str, typing.Any] = {
+        final_entry = {
             "raw_param": raw_param.detach().cpu(),
             "orig_scales": orig_scales.detach().cpu(),
             "reference_scales": reference_scales.detach().cpu(),
@@ -2076,8 +2668,7 @@ def run_calibration(
     final_loss = loss_history[-1] if loss_history else 0.0
 
     # Held-out loss (via held_cache) — threshold aware
-    held_losses: list[float] = []
-    held_before: list[float] = []
+    reconstruction_by_module: dict[str, dict[str, float | int]] = {}
     for mname, state in per_module.items():
         codes_fixed = state["codes"]
         orig_scales = state["orig_scales"]
@@ -2088,7 +2679,7 @@ def run_calibration(
         eff_final = _get_eff(raw_param, zero_mask_t)
         # Load weight for threshold on demand (bounded)
         weight_tensor_thr: torch.Tensor | None = None  # type: ignore[type-arg]
-        if threshold_enabled:
+        if threshold_enabled or soft_to_hard_enabled:
             wt_h = _load_weight(mname)
             if wt_h is not None:
                 weight_tensor_thr = wt_h.to(torch.float32)
@@ -2112,6 +2703,22 @@ def run_calibration(
                 eff_exp_init = _exp2(orig_scales, tuple(weight_tensor_thr.shape), group_size)
                 w_hat_final = codes_final.to(torch.float32) * eff_exp_final
                 w_hat_init = codes_init.to(torch.float32) * eff_exp_init
+        elif soft_to_hard_enabled:
+            assert weight_tensor_thr is not None
+            codes_final = _hard_soft_codes(weight_tensor_thr, reference_scales)
+            codes_init = _hard_soft_codes(weight_tensor_thr, reference_scales)
+            if scale_granularity == "per_tensor":
+                w_hat_final = codes_final.to(torch.float32) * eff_final[0]
+                w_hat_init = codes_init.to(torch.float32) * orig_scales[0]
+            else:
+                from openternary.quant.threshold import _expand_per_group as _exp2
+
+                w_hat_final = codes_final.to(torch.float32) * _exp2(
+                    eff_final, tuple(weight_tensor_thr.shape), group_size
+                )
+                w_hat_init = codes_init.to(torch.float32) * _exp2(
+                    orig_scales, tuple(weight_tensor_thr.shape), group_size
+                )
         else:
             if scale_granularity == "per_tensor":
                 w_hat_final = codes_fixed.to(torch.float32) * eff_final[0]
@@ -2137,18 +2744,56 @@ def run_calibration(
                         grouping_scheme="last-dim-rowwise-v1",
                     )
                 )
-        n_batches = held_cache.count_batches(mname.replace(".", "_"))
-        for b_idx in range(n_batches):
-            data = held_cache.load(mname, b_idx)
-            inp = data["input"]
-            tout = data["teacher_output"]
-            y_hat_final = F.linear(inp.to(torch.float32), w_hat_final.to(torch.float32))  # type: ignore[union-attr]
-            held_losses.append(float(_mse(tout, y_hat_final).item()))
-            y_hat_init = F.linear(inp.to(torch.float32), w_hat_init.to(torch.float32))  # type: ignore[union-attr]
-            held_before.append(float(_mse(tout, y_hat_init).item()))
+        module_metrics: dict[str, float | int] = {}
+        with torch.no_grad():
+            for split, cache in (("train", train_cache), ("heldout", held_cache)):
+                eval_device = "cuda:0" if backend_info.backend != "cpu" and torch.cuda.is_available() else "cpu"
 
-    held_loss_before_val = sum(held_before) / len(held_before) if held_before else 0.0
-    held_loss_after_val = sum(held_losses) / len(held_losses) if held_losses else 0.0
+                def evaluate_weight(
+                    weight_hat: torch.Tensor,
+                    cache_obj: typing.Any,
+                    module_name: str,
+                    device: str,
+                ) -> tuple[float, int]:
+                    weight_device = weight_hat.float().to(device)
+                    loss_sum = 0.0
+                    element_count = 0
+                    try:
+                        for b_idx in range(cache_obj.count_batches(module_name)):
+                            data = cache_obj.load_valid(module_name, b_idx)
+                            inp = data["input"].float().to(device)
+                            tout = data["teacher_output"].float().to(device)
+                            count = tout.numel()
+                            prediction = F.linear(inp, weight_device)  # type: ignore[union-attr]
+                            loss_sum += float(_mse(tout, prediction).item()) * count
+                            element_count += count
+                    finally:
+                        del weight_device
+                        if device != "cpu":
+                            with contextlib.suppress(Exception):
+                                torch.cuda.empty_cache()
+                    return loss_sum, element_count
+
+                after_sum, elements = evaluate_weight(w_hat_final, cache, mname, eval_device)
+                before_sum, before_elements = evaluate_weight(w_hat_init, cache, mname, eval_device)
+                if before_elements != elements:
+                    raise ValueError(f"reconstruction element mismatch for {mname}/{split}")
+                if not elements:
+                    raise ValueError(f"no valid {split} elements for {mname}")
+                module_metrics[f"{split}_elements"] = elements
+                module_metrics[f"{split}_before"] = before_sum / elements
+                module_metrics[f"{split}_after"] = after_sum / elements
+        reconstruction_by_module[mname] = module_metrics
+
+    def weighted_metric(split: str, when: str) -> float:
+        return sum(
+            item[f"{split}_{when}"] * item[f"{split}_elements"] for item in reconstruction_by_module.values()
+        ) / sum(item[f"{split}_elements"] for item in reconstruction_by_module.values())
+
+    initial_loss = weighted_metric("train", "before")
+    final_loss = weighted_metric("train", "after")
+    held_loss_before_val = weighted_metric("heldout", "before")
+    held_loss_after_val = weighted_metric("heldout", "after")
 
     # Aggregate scale fingerprints (all modules)
     all_orig = torch.cat([s["orig_scales"].view(-1) for s in per_module.values()]) if per_module else torch.tensor([])
@@ -2213,6 +2858,11 @@ def run_calibration(
                 )
             else:
                 codes_final = _htc2(wt_f32, state["reference_scales"], thr_ratio_final, group_size=group_size)
+        elif soft_to_hard_enabled:
+            wt_mat = _load_weight(mname)
+            if wt_mat is None:
+                raise FileNotFoundError(f"weight for {mname} not found during materialize")
+            codes_final = _hard_soft_codes(wt_mat.to(torch.float32), state["reference_scales"])
         else:
             codes_final = state["codes"]
         calibrated_state[weight_name] = {
@@ -2230,6 +2880,7 @@ def run_calibration(
     # Fast gate: skip heavy materialize (hashing 1951 tensors) when OT_SKIP_MATERIALIZE=1
     import os as _os_skip
 
+    _report: typing.Any
     if _os_skip.environ.get("OT_SKIP_MATERIALIZE") == "1":
         # Create minimal snapshot dir for gate metrics (no heavy hashing)
         calibrated_snapshot.mkdir(parents=True, exist_ok=True)
@@ -2326,6 +2977,12 @@ def run_calibration(
 
     calib_json = {
         "method": str(calib_cfg.method),
+        "metrics_version": "masked-element-weighted-v2",
+        "loss_kind": str(calib_cfg.loss),
+        "optimizer": str(calib_cfg.optimizer),
+        "reconstruction_reference": "naive ternary, not warm-start initialization",
+        "reconstruction_by_module": reconstruction_by_module,
+        "loss_history_layout": "module-major; optimizer observations, not a model improvement curve",
         "dataset": str(effective_dataset),
         "requested_dataset": str(requested_dataset),
         "effective_dataset": str(effective_dataset),
@@ -2337,7 +2994,7 @@ def run_calibration(
         "loss_history": loss_history,
         "initial_loss": initial_loss,
         "final_loss": final_loss,
-        "best_loss": best_loss,
+        "best_loss": None,
         "relative_improvement": ((initial_loss - final_loss) / initial_loss) if initial_loss else 0.0,
         "heldout_loss_before": held_loss_before_val,
         "heldout_loss_after": held_loss_after_val,
@@ -2375,6 +3032,7 @@ def run_calibration(
         "calibrated_shard_count": int(_report.shard_count),
         "calibrated_tensor_payload_bytes": int(_report.tensor_payload_bytes),
         "threshold_enabled": threshold_enabled,
+        "assignment": assignment_contract,
         "threshold_fingerprint_before": thr_fingerprint_before,
         "threshold_fingerprint_after": thr_fingerprint_after,
         "threshold_ratio_mean": thr_mean,
@@ -2396,8 +3054,18 @@ def run_calibration(
         "device_name": backend_info.device_name,
         "peak_vram_bytes": int(getattr(run_calibration, "_peak_vram", 0)),
         "peak_vram_human": format_bytes(int(getattr(run_calibration, "_peak_vram", 0))),
-        "vram_budget_bytes": int(_vram_budget.budget_bytes) if "_vram_budget" in locals() and _vram_budget is not None else 0,
+        "vram_budget_bytes": int(_vram_budget.budget_bytes)
+        if "_vram_budget" in locals() and _vram_budget is not None
+        else 0,
         "low_vram": bool(_low_vram),
+        "effective_runtime": {
+            "microbatch_auto": bool(_micro_auto),
+            "microbatch_min_size": int(_micro_min),
+            "initial_microbatch": int(initial_microbatch_max),
+            "minimum_microbatch_used": int(minimum_microbatch_used or 0),
+            "oom_retries": int(total_oom_retries),
+            "modules": runtime_module_records,
+        },
     }
     with open(out / "calibration.json", "w", encoding="utf-8") as f:
         json.dump(calib_json, f, indent=2, ensure_ascii=False)
@@ -2474,7 +3142,7 @@ def run_calibration(
         "status": "completed",
         "initial_loss": initial_loss,
         "final_loss": final_loss,
-        "best_loss": best_loss,
+        "best_loss": None,
         "heldout_before": held_loss_before_val,
         "heldout_after": held_loss_after_val,
     }
