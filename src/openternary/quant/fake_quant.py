@@ -315,8 +315,9 @@ def convert_snapshot(
         # We need sorted tensor names for determinism
         with SnapshotReader(src_root) as f:
             keys = sorted(f.keys())
+            total_tensors = len(keys)
             # Also need header info for shape/dtype? Use f.get_slice for shape
-            for name in keys:
+            for tensor_index, name in enumerate(keys, start=1):
                 tensor = f.get_tensor(name)  # torch.Tensor CPU
                 # dtype string for classification/header
                 dtype_str = str(tensor.dtype).upper().replace("TORCH.", "")
@@ -465,6 +466,16 @@ def convert_snapshot(
                 # add to buffer
                 buffer[name] = out_tensor
                 current_bytes += out_nbytes
+
+                if tensor_index == 1 or tensor_index == total_tensors or tensor_index % 25 == 0:
+                    import logging
+
+                    from openternary.services.reporting import progress
+
+                    progress("quantize_tensors", tensor_index, total_tensors)
+                    logging.getLogger("openternary.quantize").info(
+                        "quantize tensors: %d/%d", tensor_index, total_tensors
+                    )
 
             # flush remaining
             if buffer:

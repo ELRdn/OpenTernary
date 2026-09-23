@@ -1,6 +1,6 @@
 # OpenTernary Architecture
 
-**CLI architecture update (2026-09-23):** Commands now delegate to `services/` for planning, conversion, artifacts, evaluation, and bounded search. `backends/` contains lazy Ternary/TorchAO registrations; `adapters/registry.py` and `adapters/runtime.py` separate model/component selection from runtime loading. `cli/protocol.py` owns JSON/JSONL and exit codes. The current module boundaries and implemented limits are described in [docs/CLI.md](docs/CLI.md); validation evidence is in [docs/CLI_IMPLEMENTATION_STATUS.md](docs/CLI_IMPLEMENTATION_STATUS.md). Real-model integration acceptance is pending.
+**CLI architecture update (2026-09-24):** Commands delegate to `services/` for planning, conversion, artifacts, evaluation, and bounded search. `backends/` contains lazy Ternary/TorchAO registrations; `adapters/registry.py` and `adapters/runtime.py` separate model/component selection from runtime loading. `cli/protocol.py` owns JSON/JSONL and exit codes. The boundaries have been exercised with Gemma 4 E2B and a pretrained Diffusers pipeline; native packed Ternary execution remains unsupported. Current limits and evidence are in [docs/CLI.md](docs/CLI.md) and [docs/CLI_IMPLEMENTATION_STATUS.md](docs/CLI_IMPLEMENTATION_STATUS.md).
 
 ## 1. Design Goal
 

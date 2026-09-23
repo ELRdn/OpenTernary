@@ -11,7 +11,7 @@ The project begins with **Gemma 4 E2B** as the first research target and focuses
 
 Product planning: [CLI Product Roadmap](CLI_ROADMAP.md) covers CLI reliability, backend integration, artifacts, export, and automation. Model-quality research remains tracked in [Research Roadmap](ROADMAP.md) and the [P0–P7 acceptance plan](docs/plans/p0-p7-research-acceptance.md).
 
-**CLI implementation update (2026-09-23):** Offline planning, backend/adapter services, atomic manifests, packed export, bounded search, JSON output, and plugin discovery are implemented. Validation now includes seeded synthetic Llama/Diffusers networks, real TorchAO, Windows/WSL installed wheels, RX 9070 XT FP32/BF16 execution, and pinned llama.cpp CPU generation. Pretrained-model quality, native low-bit kernel certification, and release acceptance remain pending. See the [CLI guide](docs/CLI.md) and [implementation/validation matrix](docs/CLI_IMPLEMENTATION_STATUS.md).
+**CLI implementation update (2026-09-24):** CLI-0–CLI-8 are implemented and validated with synthetic fixtures, installed Windows/WSL wheels, RX 9070 XT execution, pinned llama.cpp CPU generation, Gemma 4 E2B, TorchAO 0.18.0 INT8 weight-only, and a pretrained tiny Stable Diffusion pipeline. Gemma Ternary execution succeeds but fails the frozen quality gate; TorchAO passes that single validation gate while using ordinary matmul rather than a certified native INT8 kernel. Native packed Ternary runtime and the project-license decision remain outside the completed CLI implementation. See the [CLI guide](docs/CLI.md) and [implementation/validation matrix](docs/CLI_IMPLEMENTATION_STATUS.md).
 
 ---
 

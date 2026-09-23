@@ -1,7 +1,6 @@
 # CLI real-library validation evidence
 
-Date: 2026-09-23. The local evidence below was captured before the first push. Hosted results are tracked separately in [GitHub Actions](https://github.com/ELRdn/OpenTernary/actions/workflows/ci.yml).
-All generated networks are artificial. No pretrained weights were downloaded or loaded.
+Date: 2026-09-24. The synthetic evidence below was captured before the first push; pretrained evidence was added from the later RX 9070 XT run. Hosted results are tracked separately in [GitHub Actions](https://github.com/ELRdn/OpenTernary/actions/workflows/ci.yml).
 
 ## Environment and scope
 
@@ -13,6 +12,8 @@ All generated networks are artificial. No pretrained weights were downloaded or 
 - llama.cpp commit `e6ab7c1a41054a888ada952eab4c886444c2f5ad`; archive SHA256 `033c29d5fda5a76af9fd0fc0ade185e5bcb2d8935f8165a30d96c1ed1355b663`. Every archived source file was checked. Runtime target at this revision is `llama-completion`.
 - Artificial Llama: seed 42, 2 layers, hidden 128, intermediate 256, 4 attention heads/2 KV heads, local character tokenizer, maximum 8 generated tokens.
 - Artificial diffusion: seed 42, local CLIP/UNet/VAE/DDIM pipeline, 32x32, 2 steps. No semantic/image-quality acceptance.
+- Pretrained LLM: local Gemma 4 E2B revision `6befbaca7398925921802abd1f277b495b78b738`, model payload SHA256 `33fe0cece08fb527ffefbd1a3a9ce73bd71073727993a283506293e5c6bf0137`.
+- Pretrained diffusion: `hf-internal-testing/tiny-stable-diffusion-torch`, saved locally with safetensors before conversion. The similarly named `tiny-stable-diffusion-pipe` is Flax-only and was rejected by the PyTorch pipeline loader.
 
 ## Evidence hashes
 
@@ -28,6 +29,7 @@ Reports and logs live under `E:/OpenTernary/cli-validation/reports/`. The table 
 | Windows plugins | `plugins-windows/report.json` | `be0caf6df348a738c7f199f61a18b45e573f7d7197ecb367c77aa1b22154e04e` |
 | WSL plugins | `plugins-wsl/report.json` | `e79da3d5284a4157231800467c84d0853dbd907d264940d3db9394c6847a94d3` |
 | Offline regression | `offline-release-candidate/cli-offline-validation.json` | `e8477d0c3282951f3d9958124985783e49f19e0d75feb037eea6881088cb8281` |
+| Final offline regression after pretrained fixes | `pretrained-final-20260924/cli-offline-validation.json` | `cd684340415b592abf0f7b937641d4e9d0c53437677ccfd798a8d14a23b7af6b` |
 
 Additional evidence: `offline-release-candidate/cli-offline-tests.xml`, `wsl-process-tests.xml`, `gpu-existing-regressions/tests.xml`, `gpu-resources/validation.json`, each GPU LLM's `reload.resources.json`, each diffusion `evaluation.json`, `task-changes.json`, `protected-source-check.json`, `resource-budget.json`, and `license-inventory.json`.
 
@@ -41,6 +43,7 @@ Use an isolated validation environment. Install the wheel from `E:/OpenTernary/c
 python D:/VibeCoding/OpenTernary/scripts/validate_cli_real.py --root E:/OpenTernary/cli-validation/reports/new-cpu --require-wheel
 python D:/VibeCoding/OpenTernary/scripts/validate_cli_real.py --root E:/OpenTernary/cli-validation/reports/new-gpu --require-wheel --device cuda:0 --dtype bfloat16
 python D:/VibeCoding/OpenTernary/scripts/validate_cli_plugins.py --root E:/OpenTernary/cli-validation/reports/new-plugin --uv uv
+python D:/VibeCoding/OpenTernary/scripts/validate_cli_pretrained.py --model D:/path/to/gemma4 --quality-data D:/VibeCoding/OpenTernary/data/quality/gemma4-e2b-quality-v1.json --root E:/OpenTernary/cli-validation/pretrained-new --device cuda --dtype bf16 --require-wheel
 ```
 
 On WSL use the corresponding `/mnt/d/` and `/mnt/e/` paths and the WSL Python. New output folders are required; runs are not silently overwritten. CPU CLI conversion stays on CPU; GPU inference is explicitly requested. GPU workers run sequentially under one lock, with a 4GiB Torch allocator cap. The harness totals recorded GPU case times against 1800 seconds. Resource measurements sample process RSS every 20ms and record Torch allocated/reserved peaks; they are not total board VRAM measurements.
@@ -57,12 +60,32 @@ For a Windows converter with WSL runtime, add `--runtime-prefix '["wsl","-d","Ub
 
 The workflow's `real-library-wheel` job runs the same CPU and plugin scripts on Windows/Linux. Local passes are not GitHub Actions passes. The offline suite is rerun with `OPENTERNARY_VALIDATION_ROOT` set to a folder under the validation root.
 
+## Pretrained-model evidence
+
+All files below are under `E:/OpenTernary/cli-validation/real-gemma4-20260923/`. The validation split was used; the test split was not opened.
+
+| Evidence | Result | SHA256 |
+|---|---|---|
+| `quality-bf16/quality.json` | general PPL 1214.6145, Japanese PPL 2229.7044, instruction 62.5, collapse 0 | `3b0782df2abea9088fcf3773d3c464b1684bb84d55f1d4df5a452d436e7a0800` |
+| `quality-ternary/quality.json` | 287747.46 / 212961126.33 / 0 / 8; required Gate exit 6 | `75ffc1481368fe5938f9912169e278a343dab6c24eb09405c90ca9da9d508660` |
+| `quality-torchao/quality.json` | 1201.5218 / 2078.2776 / 62.5 / 0; required Gate accepted | `0977020ec54547c5186cfc85d22332679289b7e4242b14d23f59d38864b7da86` |
+| `benchmark-bf16/benchmark.json` | 320 output tokens, 6.12 tok/s, inference VRAM 10,725,017,600 bytes | `e44afe6e8fbd99fef062c458cb358cb579f5816bda1bb1ffba484568b656fe09` |
+| `benchmark-ternary/benchmark.json` | 320 output tokens, 6.63 tok/s, inference VRAM 10,297,021,952 bytes | `fd734afc8672f4120dd76a573f38123b38472d906e5910e0fd0c009b772c1b9d` |
+| `benchmark-torchao/benchmark.json` | 158 output tokens, 18.12 tok/s, inference VRAM 8,513,800,704 bytes | `92d6d740b9d080f4cabb98501616fa6437c93bc353943b33b24715fc4299ae09` |
+| `packed-roundtrip-byte-compare.json` | 1951 tensors and 10,208,596,934 bytes exactly equal | `ef77da42559cb55460fcbc7a1423cf6345f98ed821507edb8c04ee281856dd51` |
+| `diffusion-pretrained-evaluate/evaluation.json` | pretrained UNet replacement, RX 9070 XT BF16, finite 32x32 output saved | `8f41e248ea58cfcc2a9e6e5db2e49a77898c7a9cdc4938e315fa6663148fb793` |
+| `optimize-real-budget/search.json` | real Gemma worker stopped at 1MiB cap, exit 7, resume stable, no best | `d6a8dff1bf306b308bc80de4a1ceb6b0ef29564e667da22225bc6f448f2568c2` |
+
+The Ternary snapshot contains 1951 tensors in 12 shards and is 10,243,172,030 bytes including interface files. The packed artifact is 7,060,122,575 bytes. Its safetensors restoration is 10,243,656,689 bytes because it uses one shard per tensor; the tensor payload is nevertheless byte-identical. The TorchAO artifact is 8,409,963,687 bytes and reloads all 1951 tensors. The final installed validation wheel SHA256 is `7fa3f10d25d866da036586bafa77f1b6b936e3c9574f22565fcb478a7c66ff60`.
+
+TorchAO persisted the quantized weights as `torchao.quantization.Int8Tensor`. A GPU profiler probe observed `aten::to`, `aten::mm`, and `aten::mul`, while TorchAO reported that Triton was unavailable. This proves GPU execution and reduced weight storage, but it does not prove a native INT8 matmul kernel. The result is recorded as dequantize/ordinary-matmul execution.
+
 ## Limitations and license inventory
 
-- All pretrained model support and quality acceptance remain unverified. Synthetic quality/search correctly returns no feasible candidate; controlled subprocess fixtures cover successful selection separately.
-- GPU execution does not establish a native INT8/ternary kernel. CPU-only TorchAO emits warnings for unavailable CUDA extension libraries on WSL; tested CPU INT8 operations still complete without bypass flags or a silent device substitution.
+- Pretrained support is verified only for the fixed Gemma 4 and tiny Stable Diffusion inputs above. It does not certify arbitrary architectures or image quality.
+- GPU execution does not establish a native INT8/ternary kernel. The real TorchAO probe used ordinary matmul after conversion; native packed Ternary execution is unsupported.
 - Generic packaged source provenance may report Git revision `unknown` outside a checkout; per-package file hashes and wheel hashes remain available.
-- License metadata inventory is recorded in `license-inventory.json`. Torch/TorchVision include multiple licenses; Diffusers/Transformers use Apache metadata. TorchAO metadata lacks a license expression, so that field remains unknown pending source-license review. The project license remains **TBD**. No publication decision was made.
+- License metadata inventory is recorded in `license-inventory.json`. Torch/TorchVision include multiple licenses; Diffusers/Transformers use Apache metadata. TorchAO package metadata lacks a license expression, so source-license review remains necessary. The project license remains **TBD** and requires the rights holder's decision. Stable publication was not performed.
 
 
 Final measurement-condition checks: quality/benchmark APIs seed their own generators, quality schema 3 includes seed, and benchmark comparison checks seed and warmup parity. Affected contracts (34 tests) and the full 328-test suite passed again; installed-wheel quality/search passed in both Windows and WSL. Reports: `quality-seed-windows/quality-search-result.json` and `quality-seed-wsl/quality-search-result.json`. Earlier backend/GPU evidence remains valid for the unchanged conversion/loading/runtime modules.

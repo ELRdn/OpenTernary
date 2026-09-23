@@ -79,7 +79,7 @@ quantization:
 
 ## 変換・保存
 
-以下は実モデル確認時に使う操作例。今回の検証では実行していない。
+以下は実モデル確認に使用した操作の基本形。固定したGemma 4とpretrained Diffusersでの結果は[検証表](CLI_IMPLEMENTATION_STATUS.md)を参照する。
 
 ```text
 openternary quantize "D:/models/example" --device cpu --output runs/cli-ternary --json

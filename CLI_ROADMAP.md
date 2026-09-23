@@ -2,7 +2,7 @@
 
 OpenTernaryを、既存Ternaryを組み込みbackendとして維持しながら、LLM・DiT・Diffusionの量子化を共通操作で扱えるCLIへ拡張する。まず実行結果の信頼性を固め、その上にbackend、モデル、変換処理、評価、export、自動探索を順に載せる。
 
-> **Status: SYNTHETIC REAL-LIBRARY VALIDATION / 2026-09-23** — CLI-0〜CLI-8の初期実装を、人工Llama・Diffusers pipeline、実TorchAO、保存後の別process読込、固定版GGUF converter/CPU runtime、wheel導入まで検証する段階へ進めた。環境別結果・制限・hash付き証拠は[実装・検証状況](docs/CLI_IMPLEMENTATION_STATUS.md)と[検証記録](docs/CLI_VALIDATION_EVIDENCE.md)、操作仕様は[CLIガイド](docs/CLI.md)を参照。学習済みモデルの挙動・品質、native低bit kernel、GitHub CI本実行、安定版公開は別Gateとして残る。
+> **Status: IMPLEMENTED / PRETRAINED VALIDATED / 2026-09-24** — CLI-0〜CLI-8の製品機能は実装済み。人工fixture、Windows/WSL wheel、固定版GGUFに加え、Gemma 4 E2BのBF16・Ternary・TorchAO INT8と、小型pretrained Diffusers pipelineをRX 9070 XTで検証した。Ternaryは実行できるが品質Gate不合格。TorchAO INT8 weight-onlyは保存・別process再読込・品質Gate合格まで確認したが、観測演算はdequantize後の通常matmulでありnative INT8 kernelとは認定しない。環境別結果・制限・hash付き証拠は[実装・検証状況](docs/CLI_IMPLEMENTATION_STATUS.md)と[検証記録](docs/CLI_VALIDATION_EVIDENCE.md)、操作仕様は[CLIガイド](docs/CLI.md)を参照。native packed ternary runtimeとproject license決定は実装範囲外、安定版公開はlicense決定待ち。
 >
 > **正本:** CLI製品開発は本書、研究の進行は[ROADMAP.md](ROADMAP.md)、研究予算・比較条件・品質受入は[P0–P7研究計画](docs/plans/p0-p7-research-acceptance.md)で管理する。研究のPhase/P番号と本書のCLI番号は別体系。
 
@@ -263,17 +263,19 @@ PR-CLI-12以降は作業群であり、一括PRの指示ではない。各PRは�
 
 ## 6. 完成は証拠付きの対応範囲で判定する
 
-- [ ] 誤成功・設定無視・run混在・不正な品質合格を防ぐ。
-- [ ] Model Adapter、Backend、Pass、Exporter、Evaluatorの責任が分かれている。
-- [ ] Ternaryと非Ternary、LLMとDiffusionについて、固定した対応組合せの実行証拠がある。
-- [ ] fake quant、packed保存、native低bit推論の対応範囲を区別している。
-- [ ] 保存・別プロセスでのreload・hash検証・runtime要件が揃っている。
-- [ ] JSON/JSONL、終了コード、config/report/manifestのversionと移行方針がある。
-- [ ] 同条件の複数run比較と、合格を要求する自動処理ができる。
-- [ ] optimizeの予算停止、再開、cache、有効候補なし、mixed precisionを検証した。
-- [ ] Windows/Linuxの導入CI、実機matrix、plugin互換性、licenseが揃っている。
-- [ ] CLI coreにGUI固有コードがなく、Desktopが公開仕様から利用できる。
+- [x] 誤成功・設定無視・run混在・不正な品質合格を防ぐ。
+- [x] Model Adapter、Backend、Pass、Exporter、Evaluatorの責任が分かれている。
+- [x] Ternaryと非Ternary、LLMとDiffusionについて、固定した対応組合せの実行証拠がある。
+- [x] fake quant、packed保存、native低bit推論の対応範囲を区別している。
+- [x] 保存・別プロセスでのreload・hash検証・runtime要件が揃っている。
+- [x] JSON/JSONL、終了コード、config/report/manifestのversionと移行方針がある。
+- [x] 同条件の複数run比較と、合格を要求する自動処理ができる。
+- [x] optimizeの予算停止、再開、cache、有効候補なし、mixed precisionを検証した。実Gemmaでは容量停止とworker回収、成功候補は同じ通常経路の実測で確認した。
+- [ ] Windows/Linuxの導入CI、実機matrix、plugin互換性は揃った。project licenseは権利者判断が必要なためTBDで、安定版公開Gateだけ未完了。
+- [x] CLI coreにGUI固有コードがなく、Desktopが公開仕様から利用できる。
 
 gateを閉じる際は、対象commitと変更状態、コマンド・条件、テスト結果、成果物の場所・hash、実行環境、制約、残る未検証事項を記録する。CLIリリースの合格記録からモデル品質の合格を推測させない。
 
-現時点で未確定なのは、最初の追加モデル、非Ternaryのscheme/OS/GPU、Diffusion backendの固定version、GGUF bridgeの対象runtimeである。各Phaseの入口で互換性・license・実測可能性を確認し、対応表を確定してから実装へ進む。
+固定した検証範囲は、Gemma 4 E2B revision `6befbaca7398925921802abd1f277b495b78b738`、TorchAO 0.18.0 INT8 weight-only、Diffusers 0.40.0のpretrained tiny Stable Diffusion UNet、llama.cpp `e6ab7c1a41054a888ada952eab4c886444c2f5ad`の人工Llama FP32 GGUFである。任意architecture、native ternary/INT8 kernel、画像の人間品質、署名済み安定版へ結果を広げない。
+
+CLI製品ロードマップの実装作業は完了扱いとする。残る2点は通常のCLI修正では閉じられない境界である。native packed ternary runtimeは新しいkernel/runtime研究が必要で、今回の製品範囲外。project licenseは著作権者の決定が必要で、あーしが独断で設定できない。これらを解消するまでstable releaseは行わない。

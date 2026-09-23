@@ -30,6 +30,7 @@ class TorchAOBackend:
         from openternary.export.packed import _copy_interface
         from openternary.quant.fake_quant import ConvertReport
         from openternary.services.artifacts import canonical_hash, file_hash
+        from openternary.services.reporting import progress
         from openternary.services.snapshot import SnapshotReader
 
         destination.mkdir(parents=True, exist_ok=False)
@@ -41,7 +42,8 @@ class TorchAOBackend:
         quant_config = Int8WeightOnlyConfig(granularity=granularity, set_inductor_config=False)
         entries = []
         with SnapshotReader(source) as reader:
-            for index, name in enumerate(reader.keys()):
+            names = reader.keys()
+            for index, name in enumerate(names):
                 tensor = reader.get_tensor(name)
                 info = adapter.classify(name, list(tensor.shape), str(tensor.dtype))
                 if info.quantizable:
@@ -61,6 +63,7 @@ class TorchAOBackend:
                         "quantizable": info.quantizable,
                     }
                 )
+                progress("torchao_tensors", index + 1, len(names))
         content = canonical_hash(entries)
         report = {
             "schema_version": 1,

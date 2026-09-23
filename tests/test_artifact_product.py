@@ -118,12 +118,28 @@ def test_cli_quantize_and_export_report_file_integrity(tmp_path):
     assert payload["artifact_validation"] == "file_integrity"
     assert payload["quality_acceptance"] == "not_run"
     packed = tmp_path / "packed"
+    events = tmp_path / "packed-events.jsonl"
     result = CliRunner().invoke(
-        app, ["export", str(run), "--format", "ternary-packed", "--output", str(packed), "--json"]
+        app,
+        [
+            "export",
+            str(run),
+            "--format",
+            "ternary-packed",
+            "--output",
+            str(packed),
+            "--events-jsonl",
+            str(events),
+            "--json",
+        ],
     )
     assert result.exit_code == 0, result.output
     assert json.loads(result.stdout)["artifact_validation"] == "file_integrity"
     assert validate_artifact(packed)["model_reload"] == "not_run"
+    rows = [json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()]
+    packed_rows = [row for row in rows if row["stage"] == "pack_tensors"]
+    assert packed_rows[0]["completed"] == 1
+    assert packed_rows[-1]["completed"] == packed_rows[-1]["total"] == 3
 
 
 def test_noop_content_preserved_clip_and_mixed_precision_applied(tmp_path):

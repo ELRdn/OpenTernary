@@ -42,6 +42,13 @@ def publish(**result: Any) -> None:
         operation.result.update(result)
 
 
+def progress(stage: str, completed: int, total: int | None = None) -> None:
+    """Publish bounded progress when an operation has an explicit event stream."""
+    operation = current.get()
+    if operation is not None:
+        operation.event(stage, completed, total)
+
+
 def track_run(path: Path, run_id: str) -> None:
     publish(run_dir=str(path), run_id=run_id)
     operation = current.get()

@@ -150,6 +150,59 @@ def test_torchao_api_bridge_with_test_double(tmp_path, monkeypatch):
     assert len(list(TorchAOBackend().load_weights(output))) == 3
 
 
+def test_torchao_backend_reports_tensor_progress(tmp_path, monkeypatch):
+    pytest.importorskip("torch")
+    from openternary.config.loader import load_config
+    from openternary.services.execution import convert_artifact
+    from openternary.services.reporting import Operation, current
+    from tests.test_artifact_product import tiny_source
+
+    source = tmp_path / "source"
+    tiny_source(source)
+    events = []
+
+    class FakeOperation(Operation):
+        def event(self, stage, completed=None, total=None):
+            events.append((stage, completed, total))
+
+    class Config:
+        def __init__(self, **kwargs):
+            self.options = kwargs
+
+    ao = types.ModuleType("torchao")
+    ao.__path__ = []
+    quantization = types.ModuleType("torchao.quantization")
+    granularity = types.ModuleType("torchao.quantization.granularity")
+    quantization.Int8WeightOnlyConfig = Config
+    quantization.quantize_ = lambda module, config: None
+    granularity.PerTensor = lambda: "per_tensor"
+    granularity.PerGroup = lambda size: ("per_group", size)
+    for name, module in [
+        ("torchao", ao),
+        ("torchao.quantization", quantization),
+        ("torchao.quantization.granularity", granularity),
+    ]:
+        monkeypatch.setitem(sys.modules, name, module)
+    original_version = __import__("importlib.metadata", fromlist=["version"]).version
+    monkeypatch.setattr(
+        "importlib.metadata.version", lambda name: "0.18.0" if name == "torchao" else original_version(name)
+    )
+    cfg = load_config(
+        cli_overrides={
+            "model.id": str(source),
+            "quantization.backend": "torchao",
+            "quantization.scheme": "int8-weight-only",
+            "quantization.weight_dtype": "int8",
+        }
+    )
+    token = current.set(FakeOperation("quantize"))
+    try:
+        convert_artifact(source, tmp_path / "artifact", cfg)
+    finally:
+        current.reset(token)
+    assert events[-1] == ("torchao_tensors", 3, 3)
+
+
 def test_manifest_traversal_and_packed_reserved_codes(tmp_path):
     from openternary.services.artifacts import member_path
 

@@ -78,6 +78,26 @@ def test_cli_quantize_per_tensor_and_per_group() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_cli_quantize_reports_tensor_progress() -> None:
+    tmp = pathlib.Path.cwd() / f"test_q_progress_{uuid.uuid4().hex[:6]}"
+    tmp.mkdir(parents=True, exist_ok=True)
+    try:
+        src = _make_src(tmp)
+        out = tmp / "out"
+        events = tmp / "events.jsonl"
+        result = runner.invoke(
+            app,
+            ["quantize", str(src), "--output", str(out), "--events-jsonl", str(events), "--json"],
+        )
+        assert result.exit_code == 0, result.output
+        rows = [json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()]
+        tensor_rows = [row for row in rows if row["stage"] == "quantize_tensors"]
+        assert tensor_rows[0]["completed"] == 1
+        assert tensor_rows[-1]["completed"] == tensor_rows[-1]["total"] == 3
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_cli_quantize_cache_miss_exit_2() -> None:
     result = runner.invoke(app, ["quantize", "nonexistent/model-id-xyz-9999"])
     assert result.exit_code == 2

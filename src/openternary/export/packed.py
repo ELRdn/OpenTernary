@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import shutil
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import Any
 
 from openternary.experiment.metadata import write_json
 from openternary.services.artifacts import MANIFEST, member_path
+from openternary.services.reporting import progress
 
 
 def _copy_interface(source: Path, destination: Path) -> None:
@@ -95,9 +97,11 @@ def pack_snapshot(source: Path, destination: Path) -> None:
     (destination / "tensors").mkdir()
     rows: list[dict[str, Any]] = []
     with SnapshotReader(source) as reader:
-        if set(reader.keys()) != set(targets):
+        keys = reader.keys()
+        if set(keys) != set(targets):
             raise ValueError("quantization report and payload inventory differ")
-        for index, name in enumerate(reader.keys()):
+        total_tensors = len(keys)
+        for index, name in enumerate(keys):
             tensor = reader.get_tensor(name)
             entry = targets[name]
             filename = f"tensors/{index:06d}.safetensors"
@@ -121,6 +125,10 @@ def pack_snapshot(source: Path, destination: Path) -> None:
                 save_file({"weight": tensor.contiguous()}, str(destination / filename))
                 row["storage"] = "original"
             rows.append(row)
+            completed = index + 1
+            if completed == 1 or completed == total_tensors or completed % 25 == 0:
+                progress("pack_tensors", completed, total_tensors)
+                logging.getLogger("openternary.export").info("pack tensors: %d/%d", completed, total_tensors)
     write_json(
         destination / "packed.json",
         {
@@ -154,6 +162,7 @@ def unpack_snapshot(source: Path, destination: Path) -> None:
         raise ValueError("packed artifact has no tensors")
     _copy_interface(source, destination)
     weight_map = {}
+    total_tensors = len(rows)
     for index, row in enumerate(rows):
         if not isinstance(row, dict) or not isinstance(row.get("name"), str) or row["name"] in weight_map:
             raise ValueError("invalid or duplicate packed tensor")
@@ -169,6 +178,10 @@ def unpack_snapshot(source: Path, destination: Path) -> None:
         filename = f"model-{index + 1:05d}-of-{len(rows):05d}.safetensors"
         save_file({row["name"]: tensor}, str(destination / filename))
         weight_map[row["name"]] = filename
+        completed = index + 1
+        if completed == 1 or completed == total_tensors or completed % 25 == 0:
+            progress("unpack_tensors", completed, total_tensors)
+            logging.getLogger("openternary.export").info("unpack tensors: %d/%d", completed, total_tensors)
     write_json(destination / "model.safetensors.index.json", {"metadata": {}, "weight_map": weight_map})
     if (source / "quantization.json").is_file():
         shutil.copyfile(source / "quantization.json", destination / "quantization.json")
