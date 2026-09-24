@@ -359,6 +359,85 @@ Benchmark: `suite smoke v1, thinking false, do_sample false, num_beams 1, max_ne
 
 ---
 
+## 2026-09-22 — P3 matched validation controls and P4 soft-to-hard screen
+
+### Metadata
+
+- Branch/commit at start: `feat/calib-threshold` / `d37ace6c3e75291048a7bd12534618fe7b6d4059`
+- Model/revision: `google/gemma-4-E2B-it-qat-q4_0-unquantized` / `6befbaca7398925921802abd1f277b495b78b738`
+- Local source: `D:\AI\llm model\gemma-4-E2B-it-qat-q4_0-unquantized`
+- Targets: canonical 205 Linear modules, per-group G128, BF16
+- Hardware: AMD Radeon RX 9070 XT; PyTorch `2.13.0+rocm10.0.0`; HIP `7.15.26333`
+- Calibration screen: WikiText pinned revision, 8 samples, sequence 128, 10 steps/module, Adam, seed 42, held-out 25%, microbatch auto (selected 6)
+- Evaluation: validation only, max length 128, stride 64, greedy 64-token generation
+- Quality protocol fingerprint: `f2daec8d279f0c07486a2e8377b69a39400f76761f08723698af4af02e3a973e`
+- Quality dataset fingerprint: `a0b11176d3632c939e1912daa7076c585d7006f47af7dcbcfdc0fc0ad1ed648f`
+- Frozen dataset file SHA-256: `81436b92856dd1a712d5340a2a8b4f9a358af235621ce821a2637c6a786fd899`
+
+The frozen data is deterministically selected from WikiText `b08601e...`, SQuAD `7b6d24c...`, and JGLUE/JSQuAD `7f983b6...`. Calibration, validation, and test pass exact and character-5gram MinHash disjointness checks. The test split was not executed.
+
+### Infrastructure evidence
+
+- Production `quality` runner and CLI record provenance, split/protocol/data fingerprints, actual BF16/device, language PPL, exact instruction score, collapse diagnostics, and schema-v2 response text plus UTF-8 SHA-256 for direct audit.
+- Quality dry-run now validates the complete frozen dataset contract and prints fingerprint `a0b11176d3632c939e1912daa7076c585d7006f47af7dcbcfdc0fc0ad1ed648f` without creating the requested output directory; malformed datasets fail before model loading.
+- `compare` fails closed on missing/malformed quality JSON, one-sided reports, protocol/data mismatch, schema-v2 protocol-fingerprint self-inconsistency, response-hash inconsistency, detached PPL summaries, model-revision mismatch, actual-dtype mismatch, and actual-device mismatch; the CLI displays these matched contracts.
+- Mid-module resume now fails closed if `current_raw_param`, `optimizer_state`, or CPU `rng_state` is absent (and also requires the current threshold when threshold learning is active); valid tiny interrupted runs still match their uninterrupted hard snapshots.
+- Explicit `--init-from` now rejects missing checkpoints, corrupt/incomplete state, and source/target/quantization/dtype mismatches instead of silently continuing from a fresh initialization. Warm-start cache reuse validates every shard size and SHA-256 first; a corrupt optional cache is recaptured, while cache-manifest persistence failure stops capture and a complete scale checkpoint still warm-starts threshold calibration successfully. Materialize-only requires the resume contract and fails if its final report cannot be persisted.
+- Actual ROCm allocator OOM at 480 MiB under a 3% cap was followed by successful BF16 backward and Adam; see `runs/rocm-oom-recovery-20260922-v1/report.json`.
+- `runs/p3-scale-screen-v1` was interrupted after durable `step_02050.pt`, resumed, reused the activation cache, and completed hard materialization for all 205 targets.
+- P4 schedule/config/checkpoint/materialize are production-connected; final reports say `assignment.final_state=hard`.
+- `runs/p0-preflight-20260922-rx9070xt-v14/preflight.json` was executed from outside the repository after the final acceptance-plan update and passes. It gates the exact 40-hex canonical revision, canonical `model.safetensors` SHA-256 `33fe0cece08fb527ffefbd1a3a9ce73bd71073727993a283506293e5c6bf0137`, and exact 205-name inventory fingerprint `5c810d4f7f00f8ec3569b423504e235630f2a1d880d6d42350639cf6fc11fe2a`, while retaining all six current protocol hashes and Git state independently of the invocation directory. Separating canonical inspection identity from the local source locator restores the known path-independent inspection fingerprint `sha256:07fe44eae504218937187b75826a4c780cba2f76a9145fdc38f7efdd4d3a7b01`.
+
+### P3 matched controls — saved/reloaded validation
+
+| Control | General PPL | Japanese PPL | Instruction exact | Collapse | Decision |
+|---|---:|---:|---:|---:|---|
+| BF16 | 1,214.61 | 2,229.70 | 62.5 | 0 | reference |
+| naive G128 | 287,747.46 | 212,961,126.33 | 0.0 | 8 | FAIL |
+| scale-only | 281,853.76 | 160,282,304.67 | 0.0 | 8 | FAIL |
+| threshold | 315,223.93 | 140,044,860.87 | 0.0 | 8 | FAIL |
+
+Scale-only improved Japanese PPL relative to naive but still collapsed every instruction case and remained orders of magnitude behind BF16. Threshold improved Japanese PPL further but regressed general PPL. Positive components of the preregistered composite do not override mandatory collapse/regression gates.
+
+All seven quality reports were rerun into `quality-*-validation-v3` with report schema v2. Protocol fingerprints, dataset fingerprints, summaries, and generated responses match the preceding reports exactly, and all 56 stored response hashes recompute correctly. The newly embedded instruction-split audit has fingerprint `a982aa563b50ec0381e14193e78562127af9490f6a82e9c5773cba7dfd0cd432`; maximum validation/test MinHash similarity is `0.1484375`, below the `0.9` rejection threshold. An independent SHA-256 audit of `chat_template.jinja`, model/generation/processor/tokenizer configs, and `tokenizer.json` gives the same interface fingerprint `f53f74ea4996fd9802bc42a03a42cfc9500ec84447653f5aed10bf8b39d7b47b` for BF16 and all six candidate snapshots; see `runs/p3-model-interface-audit-v1/audit.json`. BF16 returned ordinary answers such as `distributed adaptive message block switching`; the six ternary candidates returned only punctuation-like strings on every instruction item (for example 64 periods in the scale-only run). The collapse result is therefore inspectable from the saved response, not only from aggregate counters. The `compare-bf16-*-validation-audit-v3` reports have matching schema, protocol, data, model revision, actual dtype, and actual device, with `accepted=false` for every candidate.
+
+### P4 hard-snapshot screen — no modulation
+
+| Schedule | Final recon | Held-out before → after | General PPL | Japanese PPL | Instruction | Collapse | Hard code Δ |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| linear | 1.454211 | 1.472153 → 1.439834 | 301,165.69 | 185,326,217.18 | 0.0 | 8 | 0.0 |
+| cosine | 1.454181 | 1.472153 → 1.439804 | 298,709.06 | 190,855,174.30 | 0.0 | 8 | 0.0 |
+| exponential | 1.453746 | 1.472153 → 1.439399 | 302,290.56 | 185,735,594.41 | 0.0 | 8 | 0.0 |
+
+Each schedule used temperatures `1.0 → 0.05`, a final 10% hard region (one hard step in the 10-step screen), and zero logit bias `0.0`. All final content fingerprints differ because scales changed, but none changed the hard ternary assignment. Exponential had the best local reconstruction result while cosine had the best general PPL; all failed the final hard quality gate. There is no winner, so the preregistered winner-plus-zero-bias row was not run.
+
+Post-run code-path diagnosis established that hard-code invariance is structural: only reconstruction scales are optimizer parameters; final hardening uses the frozen source weight and frozen reference scale at the fixed midpoint. Temperature and zero-code bias only affect the soft expectation used while fitting scales. The saved hard assignment therefore cannot change under this implementation, independent of schedule length. The dominant residual is also localized: layer 0 attention `q_proj` contributes about 47.2% of aggregate held-out squared error in every learned candidate, with held-out MSE remaining about 291. A larger run of the same parameterization is not authorized or scientifically motivated.
+
+Across learned candidates, `q_proj` accounts for 86.47% of aggregate held-out squared error. A direct `sign(fake_quant_weight)` comparison of the saved scale-only and threshold snapshots reproduced the recorded global hard-code delta: 166,481 / 1,835,532,288 (`9.0699031e-5`). By projection, changed-code counts were 50,456 `up_proj`, 47,484 `gate_proj`, 38,458 `down_proj`, 15,395 `q_proj`, 12,422 `o_proj`, 1,248 `v_proj`, and 1,018 `k_proj`. The dominant layer-0 `q_proj` changed only 343 / 3,145,728 codes (`1.09037e-4`). This strengthens the bounded option-B proposal: first prove materially trainable hard assignment on that single dominant module rather than repeat another 205-target schedule.
+
+### Resources and decision
+
+- Candidate/control calibration directories initially consumed 75.03 GiB. The independent P2 uninterrupted run raised the seven heavy active runs to 88.016 GiB, still below the 96 GiB (80% of 120 GB) stop threshold; no further full snapshot candidate was started.
+- Threshold/P4 reports recorded about 1.1–1.2 GB peak VRAM and zero OOM retries; the resumed scale report's zero peak is not treated as valid peak telemetry.
+- Materialization logs observed process RSS up to about 18.6 GB while streaming the oversized embedding tensor and 512 MiB shards.
+- Approximate calibration wall times were 6.3–7.7 minutes per uninterrupted learned candidate; the interrupted/resumed scale run covered about 15.8 minutes between config and final metrics.
+
+### P2 full-target identity follow-up
+
+`runs/p2-scale-identity-v2` completed an independent uninterrupted 205-target scale-only run. Compared with the existing terminal-checkpoint-resumed `runs/p3-scale-screen-v1`, the output-path-normalized config, complete loss history, final scale fingerprint, calibrated content fingerprint, and SHA-256 of all 22 materialized snapshot files match exactly. The uninterrupted snapshot totals 10,242,544,948 bytes. Evidence is stored in `identity-uninterrupted.json` and `p2-identity-comparison.json` inside the new run. Mid-optimizer identity remains proven on the tiny real path; the full-target pair specifically proves terminal-checkpoint resume and materialization identity.
+
+A final readback audit verified all 205 state-file sizes and SHA-256 values in each of the six learned full-target schema-v3 checkpoints, exact equality between manifest modules and resume-contract targets, terminal cursor `205:0`, and final-hard reports. All 9,840 train/held cache files across those runs, totaling 18,585,040,944 bytes, were rehashed successfully; in every run the train/held contract fingerprints agree and the checkpoint cache fingerprint equals both cache manifests. Each materialized `quantization.json` also matches the calibration content fingerprint, reports 205 quantized / 1,951 total tensors, and references 12 model shards that are all present.
+
+The complete 32-file materialized trees (22 top-level snapshot files plus 10 copied Hugging Face cache-metadata files) were byte-hashed into canonical sorted `{name,size,sha256}` aggregate digests. `p3-scale-screen-v1` and `p2-scale-identity-v2` both equal `3ed297b77bcb97b4181cd858161e927ccb2cf0f0b4d185c8e7808eaec3d79e86`. Threshold is `c3c3fd6076c9bb71b988242017da783e93f65f69812b8e37bd340254e0df6e31`; soft linear/cosine/exponential are `4dc912c3ae801010c19df62e05643e3847a75533f7cd1f0bbccfc128f7889f30`, `3769a0b76fd13877f758a90727f6128b17e0ce20b5e0740fe9edfbdb97d94c9d`, and `1f153b9d5d93bde648a599d51480b6fcd51a5e452850072e87f8542c919e0bd9`.
+
+Decision: P3 evaluation infrastructure is accepted, but no ternary control is quality-acceptable. P4 integration is accepted as engineering work, while the P4 research gate fails. Keep the test split sealed; do not open modulation, P5, P6, or P7 based on these candidates. Diagnose unchanged hard assignments and whole-model collapse on a bounded validation-only design first.
+
+Protocol follow-up: schema-v2 `model.id` currently records the loaded snapshot locator, so it differs by design between the BF16 source and each materialized candidate. This screen therefore relies on exact revision matching plus the independent six-file interface fingerprint audit. Before P7, the quality schema and compare contract should embed and match a stable immutable source-model/interface identity rather than treating locator equality as model identity.
+
+Compatibility follow-up: `compare` retains its tested ability to read two schema-less legacy quality summaries. Such inputs lack the schema-v2 response, protocol-body, and runtime-integrity fields and were not used for this screen. P7 needs an explicit compatibility decision to reject legacy reports or force them to a non-accepting result.
+
+---
+
 ## Template (copy for next experiment)
 
 ## Metadata

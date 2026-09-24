@@ -1,7 +1,4 @@
-# Gemma 4 E2B — Phase 4.1 Real-model Calibration Acceptance
-# G128 recon-scale / wiki-tiny
-# Primary: google/gemma-4-E2B-it-qat-q4_0-unquantized @ 6befbaca...
-
+# Validation screening only: one seed, 8 calibration samples, 10 steps/module.
 model:
   id: google/gemma-4-E2B-it-qat-q4_0-unquantized
   revision: 6befbaca7398925921802abd1f277b495b78b738
@@ -18,38 +15,46 @@ quantization:
 
 calibration:
   enabled: true
-  method: recon-scale
+  method: recon-soft-to-hard
   dataset: wiki-tiny
   dataset_revision: b08601e04326c79dfdd32d625aee71d232d685c3
-  num_samples: 32
+  num_samples: 8
   seq_len: 128
-  steps: 50
+  steps: 10
   lr: 0.001
+  threshold_enabled: false
+  temperature_schedule: cosine
+  temperature_start: 1.0
+  temperature_end: 0.05
+  hard_fraction: 0.1
+  zero_logit_bias: 0.0
   optimizer: adam
   loss: mse
   window: per-layer
-  checkpoint_interval: 10
+  checkpoint_interval: 5
   allow_dataset_fallback: false
+  held_out_ratio: 0.25
   seed: 42
-  held_out_ratio: 0.2
 
 benchmark:
   suite: smoke
-
-  # deprecated alias — kept for backward compatibility,
-  # suite takes precedence
-  suites:
-    - smoke
-
   thinking: false
-
   generation:
     do_sample: false
     num_beams: 1
     max_new_tokens: 64
-
   warmup: true
 
+runtime:
+  low_vram: true
+  vram:
+    max_fraction: 0.8
+    reserve_mb: 1024
+    min_free_mb: 768
+  microbatch:
+    auto: true
+    min_size: 1
+
 seed: 42
-device: cpu
+device: auto
 dtype: bf16

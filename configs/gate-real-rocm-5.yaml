@@ -17,6 +17,7 @@ calibration:
   enabled: true
   method: recon-threshold
   dataset: wiki-tiny
+  dataset_revision: b08601e04326c79dfdd32d625aee71d232d685c3
   num_samples: 4
   seq_len: 16
   steps: 2

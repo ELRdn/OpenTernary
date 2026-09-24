@@ -4,6 +4,12 @@ This roadmap prioritizes **research validity and a stable CLI pipeline** over GU
 
 > **CLI product track:** [CLI Product Roadmap](CLI_ROADMAP.md) separately defines CLI-0–CLI-8 for reliability, shared contracts, backend/model integration, export, evaluation, and automation. Its milestones do not replace the research quality gates below.
 
+> **Validation screening update — 2026-09-22:** P0は固定revision/source hash/正準205対象/RX 9070 XTでPASS。P1は実ROCm OOM後のBF16 backward/Adam復旧とtransactional real-pathを確認。P2はcheckpoint v3、tiny mid-step再開同一性、全205 uninterrupted対終端checkpoint再開でloss/fingerprint/22 snapshot file hash完全一致を確認。P3は固定・分離済みvalidationでBF16/naive/scale-only/thresholdを同一protocol評価し、全ternary候補が崩壊gate不合格。P4はrunner/checkpoint/materializeへ接続しlinear/cosine/exponentialを全205でhard保存後評価したが、3候補とも不合格。hard code変化率0は、現実装がscaleのみ学習し、固定weight/reference scaleからhardeningするため構造的に不変と判明した。test splitは未使用、modulation/P5–P7は未実施。詳細は [foundation status](docs/PHASE4_FOUNDATION_STATUS.md) と [P4 redesign decision](docs/plans/p4-soft-to-hard-redesign-decision.md) を参照。
+
+> **Active execution plan:** P0–P7 の固定予算、比較群、品質式、phase gate、P7受入成果物は [P0–P7 research acceptance plan](docs/plans/p0-p7-research-acceptance.md) を正とする。
+
+> **Research planning update — 2026-09-18:** Phase 4.5 に回転ベース三値量子化の研究候補と実験前ゲートを追加。既存の 4.3 / 4.4 は維持する。これは計画の更新であり、回転の実装・実験・Gemma 品質改善を完了したという意味ではない。以下の 2026-08-23 snapshot は当時の実装記録であり、現時点の品質・CI 合格を保証しない。
+
 > **Progress snapshot — 2026-08-23 (Phase 4.1 CLOSED, Phase 4.2 IN_PROGRESS)**
 > - **Phase 0 — Repository Foundation: ✅ COMPLETE**
 > - **Phase 1a — Gemma 4 E2B Inspection: ✅ COMPLETE** — 1951 tensors / 5,104,298,467 params / 205 quantizable (0.359605) / BF16 9.5075 GB / text 35 layers hidden 1536 vocab 262144, fingerprint `sha256:07fe44eae504218937187b75826a4c780cba2f76a9145fdc38f7efdd4d3a7b01` stable.
@@ -205,7 +211,7 @@ M13 docs distinguish per_tensor/per_group, fake/packed, behavioral/quality, LD-R
 
 **Goal:** Move beyond static PTQ.
 
-**Status: Phase 4.1 ✅ CLOSED — 4.2 🚧 IN_PROGRESS (T4.2-1..6 ✅, T4.2-7/8 ⏳)**
+**Status: P0/P1 and P3 evaluation path PASS; P2 full-target terminal-resume identity PASS with full-target mid-optimizer identity unrun; P4 production screen completed with negative result**
 
 ## Deliverables (Phase 4.1)
 
@@ -219,7 +225,7 @@ M13 docs distinguish per_tensor/per_group, fake/packed, behavioral/quality, LD-R
 - [x] `calibrate` CLI real (dry-runはfilesystemなしで `Target modules N / Estimated cache`表示, `window`は`per-layer`のみ)
 - [ ] early-stop support — deferred to 4.2
 
-## Phase 4.2 — Learnable Thresholds (recon-threshold) 🚧 IN_PROGRESS
+## Phase 4.2 — Learnable Thresholds (recon-threshold) ✅ IMPLEMENTED / ❌ QUALITY GATE
 
 **Goal:** `threshold` を `scale` と分離して学習し、`codes` 自体が最適化中に変化するパスを確立する。Phase 2/4.1 の暗黙 `±0.5*scale`（`round`）を `threshold_ratio ∈ (0,1)` で一般化し、clipped STE で微分可能にする。
 
@@ -233,8 +239,8 @@ M13 docs distinguish per_tensor/per_group, fake/packed, behavioral/quality, LD-R
 - [x] **T4.2-4 Config 拡張** — `src/openternary/config/schema.py` `CalibrationConfig` に `threshold_enabled` / `threshold_lr` / `threshold_init_ratio` / `threshold_granularity` / `threshold_estimator: clipped-ste` / `threshold_ste_width` / `threshold_eps` / `init_from` 追加。`method: recon-scale | recon-threshold`（デフォルト `recon-scale` で Phase 4.1 と完全互換）、`window` は `per-layer` のみ維持。`configs/gemma4-e2b-threshold.yaml` は本スキーマに準拠
 - [x] **T4.2-5 Runner 同時最適化** — `src/openternary/calibration/runner.py` で `raw_threshold` を per-module に追加、`Adam([{scales, lr}, {thresholds, threshold_lr}])` 同時最適化。各 forward で `reference_scale`（frozen AbsMean）と `eff_thr_ratio` から `ste_threshold_codes` で codes 再計算 → `w_hat = codes_ste * reconstruction_scale`（`_expand_per_group` で broadcast）。checkpoint に `raw_thresholds`/`threshold_eps`/`threshold_ste_width` を保存、`--resume` は `threshold_enabled` 不一致を loud error
 - [x] **T4.2-6 Materialize 閾値対応** — `src/openternary/quant/fake_quant.py` `materialize_calibrated_snapshot` は `calibrated_state[codes]` をそのまま利用（threshold 反映済み hard codes）、`runner.py` 側で W を bounded に再ロードして `hard_threshold_codes` で最終 codes を確定。`threshold=0.3` で `content_fingerprint` が scale-only と差異、sharded roundtrip は bounded（`O(largest tensor + 512 MiB)`）を維持、`_run_materialize_only` も thresholds 復元対応
-- [ ] **T4.2-7 CLI 表示** — `src/openternary/cli/main.py` `--dry-run` に `Threshold` 行を追加（`inspect`/`quantize`/`benchmark`/`compare` は変更なし）— ⏳ pending
-- [ ] **T4.2-8 ドキュメント** — `ROADMAP.md` / `ARCHITECTURE.md` §7 / `EXPERIMENT_LOG.md` の Gate 章更新（本タスクで ROADMAP/ARCHITECTURE を更新、EXPERIMENT_LOG は次回実験で追記）— ⏳ pending（本ファイルの更新で一部達成）
+- [x] **T4.2-7 CLI 表示** — `calibrate --dry-run` に threshold設定を表示
+- [x] **T4.2-8 ドキュメント** — `ROADMAP.md` / foundation status / `EXPERIMENT_LOG.md` を実測結果へ更新
 
 依存順: `T4.2-1 → T4.2-2 → T4.2-3 → T4.2-5 → T4.2-6`、`T4.2-4` は並行可。`T4.2-7/8` は残作業。
 
@@ -245,17 +251,72 @@ M13 docs distinguish per_tensor/per_group, fake/packed, behavioral/quality, LD-R
 ### 4.1 — Learnable scales ✅ CLOSED
 `scale`のみを学習、Teacher capture→unload→`codes`固定×`scale`学習→bounded streamingでfinal materialization。
 
-### 4.2 — Learnable thresholds 🚧 IN_PROGRESS (T4.2-1..6 ✅)
+### 4.2 — Learnable thresholds ✅ IMPLEMENTED / ❌ QUALITY GATE
 `threshold`学習、per-group閾値探索。`reference_scale` frozen × `reconstruction_scale` learnable の分離、`clipped STE`（`threshold_ratio` → `hard gate` + `surrogate`）で `codes` を毎 forward 再計算。`configs/gemma4-e2b-threshold.yaml` が正準。
 
 ### 4.3 — Soft-to-hard ternarization
-STE / temperature annealing。
+
+Linear/cosine/exponential temperature schedules、最終hard区間、soft ternary expectation、zero-code bias、deterministic hardening を本番runner/config/checkpoint/materializeへ接続。各scheduleを正準205対象・10 steps/module・validation-onlyで実行し、最終hard保存・再読込後に評価した。3候補とも指示0%、崩壊8/8、`code_change_ratio=0` で品質gate不合格。現実装ではoptimizerがscaleのみを所有し、hard assignmentは固定weight/reference scaleのmidpointで決まるため、この0はschedule長に依存しない構造的結果。winner不在のためzero-code bias比較は開かず、test splitも未使用。再実験前にparameterizationのarchitecture decisionが必要。
 
 ### 4.4 — Multi-layer/window reconstruction
 `per-block` window, cross-layer。
 
 ### 4.5 — Research reproduction experiments
-CAT-Q / ScaleQ 等は再現してから命名。
+
+CAT-Q / ScaleQ / TWLA 等は再現してから命名。部分的な導入は `twla-inspired` / `rotated-ternary` とし、論文再現とは区別する。
+
+#### Rotation-based ternary research candidate — 2026-09-18
+
+**Status: PLANNED / UNVALIDATED on Gemma 4 E2B.** 実装・長時間実験の開始は別途承認を要する。モデル対象、正準205 Linear、既存の除外範囲は変更しない。回転不足が過去の出力崩壊の原因だったと断定しない。
+
+**Hypothesis:** scale / threshold の調整に加え、量子化前の座標系を変えることで三値近似誤差を減らせる可能性がある。固定 Hadamard は低コストの比較候補であり、学習した三峰性整形や TWLA 全体の代替・再現ではない。
+
+参考手法を分けて評価する:
+
+- **TWLA / E2M-ATQ:** オフセットと scale を持つ非対称三値量子化。現行の対称 `codes * scale` とは異なるため、表現・保存・推論契約の変更は別途設計レビューする。
+- **TWLA / KOTMS:** 三値向け分布を目指す学習可能な Kronecker 構造の直交回転。単純な固定 Hadamard 追加とは区別する。
+- **TWLA / ILA-AMP:** 隣接層への影響も考慮する活性化混合精度。初期比較では導入せず、活性化は16bit（現行 BF16）に固定する。A4 / 混合精度は重み側の有効性確認後の別研究とする。
+- **SpinQuant:** 学習回転とランダム回転の比較設計の参考。三値 Gemma での成功を示す根拠としては扱わない。
+
+#### Entry gate — 新しい校正実験より先に解決すること
+
+以下は前回監査を踏まえた未完了の確認・修正要件。古い成果物や tiny fixture の PASS だけでは代替しない。
+
+- [ ] 元モデルの revision / 重みの完全性・可用性、正準205対象、除外モジュールの保存を確認する。異なる対象集合の過去 checkpoint を無条件に比較対照へ流用しない。
+- [ ] padding を再構成 loss / 評価から除外し、実効 token 数・言語構成・長さ分布を記録する。calibration / validation / 最終 held-out を分離し、回転 seed の選定に最終評価データを使わない。
+- [ ] module-major loss は同じ module の before / after と有効要素数で重み付けした集約で比較する。設定と実際の optimizer / loss / 対象範囲の一致を確認する。
+- [ ] checkpoint / resume / materialize の対象集合一致、最終 module、欠損時の停止、cache の同一性を検証する。復旧で失われた必須 metadata を未確認のまま成功判定しない。
+- [ ] microbatch の計算グラフ解放・OOM 時の復旧を含むメモリ上限、関連テスト・lint・型検査を確認する。
+- [ ] Phase 5 の全完成を待たず、この研究比較に必要な perplexity と独立した日本語評価を先に用意する。評価設定・数値許容差・品質改善幅・許容劣化・時間/VRAM上限・中止条件を実験前に固定する。
+
+#### Staged experiments — 段階ごとに合格してから拡大する
+
+| Stage | 比較・検証対象 | 次へ進む条件 |
+|---|---|---|
+| R0 — Corrected control | 同一 revision / 対象 / データ / 校正予算で、BF16・naive・修正済み回転なし校正を比較 | 比較条件と品質評価が有効。既存の崩壊した出力だけを対照にしない |
+| R1 — Function preservation | 量子化せず、単一 Linear → block → Gemma text path の回転前後、および保存・再読み込み後を比較 | FP32 と実使用 BF16 で事前定義した誤差内、有限値、除外範囲不変 |
+| R2 — Fixed rotations | 回転なし / 正規化 Hadamard / ランダム符号付き Hadamard。まず小規模な対象で比較 | validation 上の誤差・品質と追加コストを報告。seed ごとの変動と負の結果も保存 |
+| R3 — Learned rotations / asymmetric quantizer | 学習回転の有無 × 非対称量子化の有無を切り分ける | 単独効果と組み合わせ効果を確認。固定 Hadamard の不振だけで学習回転を否定しない |
+| R4 — Whole-model acceptance | 選定した構成を正準205対象へ適用し、独立 held-out と反復実験で評価 | 事前登録した品質・日本語・資源ゲートを満たす。満たさなければ不採用または再設計 |
+
+全比較で group size、対象集合、データ、dtype、生成条件を揃え、回転の学習・探索に使う追加予算も明記する。記録する指標は module 別再構成誤差、perplexity、日本語品質、出力崩壊、zero / sign 比率、scale / threshold、max-to-RMS、必要に応じ尖度、実測時間・RAM/VRAM・保存容量。局所 MSE の改善だけで全体品質の改善を宣言しない。
+
+#### Implementation / export constraints — 設計レビュー事項
+
+- 列ベクトル表記では `W x = (W R)(R^T x)`。PyTorch の行バッチ表記では `W_rot = W R`, `X_rot = X R` として `X_rot W_rot^T = X W^T`。正規化、転置、ランダム符号の掛け順を明記し、直交性と等価性をテストする。
+- `G128` は量子化単位であり、回転ブロックを128にする必然性はない。`1536 = 12 * 128` は分割可能性だけを示す。固定 Hadamard が常に外れ値や三値誤差を減らすとは仮定しない。
+- 回転した三値重みだけを通常の Linear に渡してはならない。対応する入力変換、または数学的に等価な融合が必要。逆回転を重みに戻すと一般に三値性が失われるため、それを packed ternary と呼ばない。
+- 回転 wrapper / adapter、回転行列または再構成に必要な seed・方式・寸法・version、scale / offset の保存契約と round-trip を設計する。RoPE / 非線形演算 / normalization / shared KV / PLE をまたぐ融合は等価性の検証なしに行わない。
+- Phase 7 の packed export は回転・offset の metadata と演算コストを含めて再検証する。fake-quant の動作確認と packed runtime の速度・容量改善は別の合格条件とする。
+- TWLA の報告対象は LLaMA / Qwen3 系、実験環境は NVIDIA A6000。Gemma 4 / ROCm 対応は未検証として依存関係・演算ごとに確認する。`torch.cuda` という API 名だけで ROCm 非対応と断定しない。
+
+#### Primary references
+
+- [TWLA paper v2](https://arxiv.org/abs/2606.13054v2) — 手法と実験条件。固定回転だけを追加して再現と呼ばない。
+- [TWLA official repository](https://github.com/Kishon-zzx/TWLA) / [KOTMS implementation](https://github.com/Kishon-zzx/TWLA/blob/master/scripts/KOTMS.py) — 入力変換と回転 metadata 保存の参考。導入時には commit を固定し、README の Apache-2.0 表記だけでなく由来コードのライセンス・帰属要件も確認する。
+- [SpinQuant paper](https://arxiv.org/abs/2405.16406) — 回転選択と学習の比較。実装開始時に参照版を固定する。
+
+上記は 2026-09-18 の文献・コード確認を受けた研究計画。実装済み機能や新しい実験結果は追加していない。
 
 ## Gate (Phase 4.1: G4-1〜12)
 
@@ -292,9 +353,9 @@ G4.2-10 ActivationCache / materializeはbounded streaming維持、4.6GB embedで
 G4.2-11 materializeした calibrated_snapshotが threshold反映で content_fingerprintが scale-onlyと差異、かつ AutoModel load + smoke PASS
 G4.2-12 --materialize-onlyが thresholdチェックポイントから正しく再現
 ```
-→ 現状 T4.2-1..6 実装完了により G4.2-3/8/9/10 は unit/実装で担保、G4.2-1/2/4/5/7/11/12 は `threshold_enabled=true` tiny fixture 手動受け入れで検証予定。G4.2-6 は `ruff/mypy/pytest` で検証。
+→ T4.2-1..8 は実装・tiny/実ROCm経路・全205 validation screenで確認済み。保存後threshold候補は general PPL 315,223.93 / Japanese PPL 140,044,860.87 / instruction 0% / collapse 8/8 で品質gate不合格。実装完了と研究採用は分離する。
 
-Overall Phase 4 gate: Calibration consistently improves at least one held-out metric over naive ternary without using held-out evaluation data during optimization. → **Phase 4.1で達成、4.2で拡張中（scale+threshold 同時最適化）。**
+Overall Phase 4 gate: Calibration consistently improves at least one held-out metric over naive ternary without using held-out evaluation data during optimization. → **Phase 4.1 の tiny fixture での達成と、実 Gemma の品質保持は別判定。実モデルの科学的受け入れは未完了として扱い、4.2 の是正・検証と上記研究ゲートで確認する。**
 
 ---
 
