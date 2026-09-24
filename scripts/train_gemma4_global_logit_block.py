@@ -17,6 +17,7 @@ from train_gemma4_rotated_block import tokenize_calibration_rows
 
 from openternary.adapters.runtime import load_model, load_processor
 from openternary.config.loader import load_config
+from openternary.quant.logit_ste import hard_logit_codes, ste_logit_codes
 from openternary.quant.rotation import apply_block_rotation, hadamard_last_dim, load_rotation_plan
 
 
@@ -30,6 +31,8 @@ def main() -> None:
     parser.add_argument("--steps", type=int, default=300)
     parser.add_argument("--eval-every", type=int, default=30)
     parser.add_argument("--lr", type=float, default=0.01)
+    parser.add_argument("--train-hard-codes", action="store_true")
+    parser.add_argument("--code-lr", type=float, default=0.005)
     parser.add_argument("--top-k", type=int, default=64)
     parser.add_argument("--seq-len", type=int, default=128)
     parser.add_argument("--upstream-block-dir", type=Path)
@@ -41,6 +44,7 @@ def main() -> None:
         or args.steps < 1
         or args.eval_every < 1
         or args.lr <= 0
+        or args.code_lr <= 0
         or args.top_k < 2
         or args.seq_len < 8
     ):
@@ -180,6 +184,13 @@ def main() -> None:
             "rotation": rotation,
             "delta": torch.nn.Parameter(torch.zeros_like(scales)),
         }
+        if args.train_hard_codes:
+            states[name]["code_logits"] = torch.nn.Parameter(codes * 0.55)
+
+        def current_codes(state: dict[str, Any]) -> torch.Tensor:
+            if not args.train_hard_codes:
+                return state["codes"]
+            return ste_logit_codes(state["code_logits"])
 
         def replace_output(
             current: torch.nn.Module,
@@ -189,7 +200,7 @@ def main() -> None:
             module_name: str = name,
         ) -> torch.Tensor:
             state = states[module_name]
-            dense_weight = (state["codes"].reshape(-1, 128) * state["scales"] * state["delta"].exp()).reshape_as(
+            dense_weight = (current_codes(state).reshape(-1, 128) * state["scales"] * state["delta"].exp()).reshape_as(
                 state["codes"]
             )
             transformed = apply_block_rotation(hadamard_last_dim(values[0].float(), 128), state["rotation"])
@@ -215,7 +226,23 @@ def main() -> None:
             losses.append(objective(example).detach())
         return float(torch.stack(losses).mean().item())
 
-    optimizer = torch.optim.Adam([state["delta"] for state in states.values()], lr=args.lr)
+    optimizer_groups = [{"params": [state["delta"] for state in states.values()], "lr": args.lr}]
+    if args.train_hard_codes:
+        optimizer_groups.append({"params": [state["code_logits"] for state in states.values()], "lr": args.code_lr})
+    optimizer = torch.optim.Adam(optimizer_groups)
+    trainable = [parameter for group in optimizer_groups for parameter in group["params"]]
+
+    def code_change_ratio() -> float:
+        if not args.train_hard_codes:
+            return 0.0
+        changed = 0
+        total = 0
+        for state in states.values():
+            hard = hard_logit_codes(state["code_logits"])
+            changed += int((hard != state["codes"]).sum().item())
+            total += hard.numel()
+        return changed / total
+
     history = []
     best = None
     best_state = None
@@ -227,20 +254,33 @@ def main() -> None:
             if not torch.isfinite(loss):
                 raise ValueError(f"nonfinite logit distillation loss at step {step}")
             loss.backward()
-            torch.nn.utils.clip_grad_norm_([state["delta"] for state in states.values()], 1.0)
+            torch.nn.utils.clip_grad_norm_(trainable, 1.0)
             optimizer.step()
         if step == 0 or step % args.eval_every == 0 or step == args.steps:
             with torch.no_grad():
-                row = {"step": step, "train_kl": evaluate("train"), "held_kl": evaluate("held")}
+                row = {
+                    "step": step,
+                    "train_kl": evaluate("train"),
+                    "held_kl": evaluate("held"),
+                    "hard_code_change_ratio": code_change_ratio(),
+                }
             history.append(row)
             if best is None or row["held_kl"] < best["held_kl"]:
                 best = row
-                best_state = {name: state["delta"].detach().clone() for name, state in states.items()}
+                best_state = {
+                    name: {
+                        "delta": state["delta"].detach().clone(),
+                        "code_logits": state["code_logits"].detach().clone() if args.train_hard_codes else None,
+                    }
+                    for name, state in states.items()
+                }
             print(json.dumps(row), flush=True)
     assert best is not None and best_state is not None
     with torch.no_grad():
-        for name, delta in best_state.items():
-            states[name]["delta"].copy_(delta)
+        for name, saved in best_state.items():
+            states[name]["delta"].copy_(saved["delta"])
+            if saved["code_logits"] is not None:
+                states[name]["code_logits"].copy_(saved["code_logits"])
         if abs(evaluate("held") - best["held_kl"]) > 1e-7:
             raise ValueError("best logit KD state did not replay")
     args.output_dir.mkdir(parents=True)
@@ -248,9 +288,14 @@ def main() -> None:
     for name in selected:
         state = states[name]
         scales = state["scales"] * state["delta"].exp()
-        weight = (state["codes"].reshape(-1, 128) * scales).reshape_as(state["codes"])
+        codes = (
+            hard_logit_codes(state["code_logits"].detach()).to(torch.int8)
+            if args.train_hard_codes
+            else state["codes"].to(torch.int8)
+        )
+        weight = (codes.float().reshape(-1, 128) * scales).reshape_as(state["codes"])
         payload[name + ".weight"] = weight.to(torch.bfloat16).detach().cpu().contiguous()
-        payload[name + ".codes"] = initial[name + ".codes"]
+        payload[name + ".codes"] = codes.detach().cpu().contiguous()
         payload[name + ".scales"] = scales.detach().reshape(-1).cpu().contiguous()
         payload[name + ".thresholds"] = initial[name + ".thresholds"]
     saved_path = args.output_dir / f"layer{args.layer}.safetensors"
@@ -265,7 +310,13 @@ def main() -> None:
     artifact_sha256 = hashlib.sha256(saved_path.read_bytes()).hexdigest()
     report = {
         "status": (
-            "global_logit_kd_scale_only_upstream_block" if upstream_artifacts else "global_logit_kd_scale_only_block"
+            "global_logit_kd_hard_codes_upstream_block"
+            if args.train_hard_codes and upstream_artifacts
+            else "global_logit_kd_hard_codes_block"
+            if args.train_hard_codes
+            else "global_logit_kd_scale_only_upstream_block"
+            if upstream_artifacts
+            else "global_logit_kd_scale_only_block"
         ),
         "source": str(source),
         "rotation_manifest_sha256": manifest_sha256,
@@ -279,6 +330,8 @@ def main() -> None:
         "held_samples": len(teacher_data["held"]),
         "steps": args.steps,
         "top_k": args.top_k,
+        "train_hard_codes": args.train_hard_codes,
+        "code_lr": args.code_lr if args.train_hard_codes else None,
         "seq_len": args.seq_len,
         "best": best,
         "history": history,

@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 import torch
+import torch.nn.functional as functional
 from safetensors.torch import load_file
 
 from openternary.adapters.runtime import load_model, load_processor
@@ -25,6 +26,7 @@ def main() -> None:
     parser.add_argument("--rotation-manifest", type=Path, required=True)
     parser.add_argument("--block-dir", type=Path, required=True)
     parser.add_argument("--through-layer", type=int, default=34)
+    parser.add_argument("--residual-report", type=Path)
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--baseline-quality", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -53,6 +55,8 @@ def main() -> None:
                 "joint_three_block_reconstruction_only",
                 "global_logit_kd_scale_only_block",
                 "global_logit_kd_scale_only_upstream_block",
+                "global_logit_kd_hard_codes_block",
+                "global_logit_kd_hard_codes_upstream_block",
                 "dense_latent_block_reconstruction_only",
                 "dense_latent_upstream_block_reconstruction_only",
             }
@@ -66,6 +70,7 @@ def main() -> None:
             "upstream_conditioned_block_reconstruction_only",
             "dense_latent_upstream_block_reconstruction_only",
             "global_logit_kd_scale_only_upstream_block",
+            "global_logit_kd_hard_codes_upstream_block",
         } and report.get("upstream_artifact_sha256") != {
             str(row["layer"]): row["artifact_sha256"] for row in block_reports
         }:
@@ -134,6 +139,59 @@ def main() -> None:
         ):
             raise ValueError("joint three-block artifact set mismatch")
 
+    residual_metadata = None
+    residual_runtime_factors = {}
+    if args.residual_report is not None:
+        residual_report = json.loads(args.residual_report.read_text(encoding="utf-8"))
+        residual_artifact = args.residual_report.with_suffix(".safetensors")
+        residual_digest = hashlib.sha256(residual_artifact.read_bytes()).hexdigest()
+        residual_layer = residual_report.get("layer")
+        residual_names = {name for name in weights if name.startswith(f"model.language_model.layers.{residual_layer}.")}
+        if (
+            residual_report.get("source") != str(source)
+            or residual_report.get("artifact_sha256") != residual_digest
+            or not isinstance(residual_layer, int)
+            or not 0 <= residual_layer < len(block_reports)
+            or not residual_names
+            or residual_report.get("block_artifact_sha256") != block_reports[residual_layer]["artifact_sha256"]
+            or set(residual_report.get("modules", {})) != residual_names
+        ):
+            raise ValueError("low-rank residual provenance mismatch")
+        residual_tensors = load_file(str(residual_artifact), device="cpu")
+        if set(residual_tensors) != {name + suffix for name in residual_names for suffix in (".left", ".right")}:
+            raise ValueError("low-rank residual tensor set mismatch")
+        residual_parameter_count = 0
+        factorized_runtime = residual_report.get("runtime_mode") == "factorized"
+        for name in sorted(residual_names):
+            left = residual_tensors[name + ".left"]
+            right = residual_tensors[name + ".right"]
+            if (
+                left.dtype != torch.bfloat16
+                or right.dtype != torch.bfloat16
+                or left.ndim != 2
+                or right.ndim != 2
+                or left.shape[1] != residual_report["modules"][name]["saved_rank"]
+                or right.shape[0] != residual_report["modules"][name]["saved_rank"]
+                or not 1 <= left.shape[1] <= residual_report["save_rank"]
+                or left.shape[0] != weights[name].shape[0]
+                or right.shape[1] != weights[name].shape[1]
+                or not torch.isfinite(left).all()
+                or not torch.isfinite(right).all()
+            ):
+                raise ValueError(f"invalid low-rank residual: {name}")
+            if factorized_runtime:
+                residual_runtime_factors[name] = (left.to("cuda:0"), right.to("cuda:0"))
+            else:
+                weights[name] = (weights[name].float() + left.float() @ right.float()).to(torch.bfloat16)
+            residual_parameter_count += left.numel() + right.numel()
+        residual_metadata = {
+            "layer": residual_layer,
+            "rank": residual_report["save_rank"],
+            "artifact_sha256": residual_digest,
+            "bf16_parameter_count": residual_parameter_count,
+            "runtime_mode": "factorized" if factorized_runtime else "dense_sum_screen",
+        }
+
     cfg = load_config(
         config_path="configs/gemma4-e2b.yaml",
         cli_overrides={"model.id": str(source), "device": "cuda", "dtype": "bf16", "seed": 42},
@@ -164,6 +222,22 @@ def main() -> None:
                 return (transformed, *values[1:])
 
             hooks.append(model.get_submodule(name).register_forward_pre_hook(rotate_input))
+        for name, (left, right) in residual_runtime_factors.items():
+
+            def add_residual(
+                _module: torch.nn.Module,
+                values: tuple[torch.Tensor, ...],
+                original: torch.Tensor,
+                *,
+                matrix_left: torch.Tensor = left,
+                matrix_right: torch.Tensor = right,
+            ) -> torch.Tensor:
+                correction = functional.linear(
+                    functional.linear(values[0].float(), matrix_right.float()), matrix_left.float()
+                )
+                return (original.float() + correction).to(original.dtype)
+
+            hooks.append(model.get_submodule(name).register_forward_hook(add_residual))
 
     candidate = run_quality_benchmark(
         cfg, args.data, model=model, processor=processor, split="validation", max_length=128, stride=64
@@ -182,6 +256,7 @@ def main() -> None:
         "block_artifact_sha256": {str(row["layer"]): row["artifact_sha256"] for row in block_reports},
         "ternary_module_count": len(weights),
         "saved_snapshot": False,
+        "lowrank_residual": residual_metadata,
     }
     baseline = json.loads(args.baseline_quality.read_text(encoding="utf-8"))
     if baseline.get("report_schema_version") != 3 or candidate.get("report_schema_version") != 3:
@@ -209,7 +284,11 @@ def main() -> None:
         raise ValueError("baseline/candidate data mismatch")
     gate = compare_quality_metrics(baseline["summary"], candidate["summary"])
     result = {
-        "status": "reloaded_block_artifacts_in_memory_validation_only",
+        "status": (
+            "ternary_plus_bf16_lowrank_residual_in_memory_validation_only"
+            if residual_metadata
+            else "reloaded_block_artifacts_in_memory_validation_only"
+        ),
         "source": str(source),
         "through_layer": args.through_layer,
         "ternary_module_count": len(weights),
@@ -220,6 +299,7 @@ def main() -> None:
         "baseline_summary": baseline["summary"],
         "candidate_summary": candidate["summary"],
         "quality_gate": gate,
+        "lowrank_residual": residual_metadata,
         "elapsed_s": elapsed_s,
         "peak_vram_allocated_bytes": peak_vram_allocated_bytes,
     }

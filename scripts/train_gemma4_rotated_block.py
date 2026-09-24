@@ -186,6 +186,7 @@ def main() -> None:
                 model(input_ids=inputs, attention_mask=mask, use_cache=False)
                 if set(captured) != {"positional", "keyword", "teacher"}:
                     raise ValueError("incomplete decoder block capture")
+                captured["valid_mask"] = mask.detach().clone()
                 examples[split].append(dict(captured))
     pre.remove()
     post.remove()
@@ -360,8 +361,9 @@ def main() -> None:
         for example in examples[split]:
             output = layer(*example["positional"], **example["keyword"]).float()
             teacher = example["teacher"].float()
-            total_error += float((output - teacher).square().sum().item())
-            total_energy += float(teacher.square().sum().item())
+            valid = example["valid_mask"].unsqueeze(-1)
+            total_error += float(((output - teacher).square() * valid).sum().item())
+            total_energy += float((teacher.square() * valid).sum().item())
         return total_error / total_energy
 
     def code_change() -> float:
@@ -382,7 +384,8 @@ def main() -> None:
             example = examples["train"][(step - 1) % len(examples["train"])]
             output = layer(*example["positional"], **example["keyword"]).float()
             teacher = example["teacher"].float()
-            loss = (output - teacher).square().mean() / teacher.square().mean()
+            valid = example["valid_mask"].unsqueeze(-1)
+            loss = ((output - teacher).square() * valid).sum() / (teacher.square() * valid).sum()
             if args.learn_dense_latent and args.latent_reg:
                 regularizer = torch.stack(
                     [
@@ -492,6 +495,7 @@ def main() -> None:
         "latent_reg": args.latent_reg if args.learn_dense_latent else None,
         "ste_width": args.ste_width,
         "bf16_replay_exact": True,
+        "masked_loss": True,
         "upstream_artifact_sha256": upstream_artifacts,
         "initial": history[0],
         "best": best,
