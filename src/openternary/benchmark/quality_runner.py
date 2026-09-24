@@ -205,9 +205,10 @@ def run_quality_benchmark(
     protocol_fingerprint = hashlib.sha256(
         json.dumps(protocol, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+    identity = snapshot_identity(resolved_snapshot)
     return {
         "report_schema_version": 3,
-        "identity": snapshot_identity(resolved_snapshot),
+        "identity": identity,
         "protocol": protocol,
         "protocol_fingerprint": protocol_fingerprint,
         "dataset": payload["dataset"],
@@ -215,7 +216,7 @@ def run_quality_benchmark(
         "instruction_data_audit": instruction_data_audit,
         "model": {
             "id": config.model.id,
-            "revision": config.model.revision,
+            "revision": config.model.revision or identity.get("source_revision"),
             "snapshot_path": str(resolved_snapshot) if resolved_snapshot is not None else None,
             "requested_dtype": config.dtype,
             "actual_dtype": actual_dtype,

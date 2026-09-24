@@ -54,13 +54,73 @@ def load_model(config: AppConfig, source: Path, dtype: Any, device_map: Any) -> 
     if manifest and manifest["format"] == "torchao":
         return _load_torchao(config, source, dtype, device_map, model_cls)
     try:
-        return model_cls.from_pretrained(
+        model = model_cls.from_pretrained(
             str(source), dtype=dtype, device_map=device_map, trust_remote_code=False, local_files_only=True
         )
     except TypeError:
-        return model_cls.from_pretrained(
+        model = model_cls.from_pretrained(
             str(source), torch_dtype=dtype, device_map=device_map, trust_remote_code=False, local_files_only=True
         )
+    _install_rotations(model, source, manifest)
+    return model
+
+
+def _install_rotations(model: Any, source: Path, manifest: dict[str, Any] | None) -> None:
+    """Attach the input maps required by rotated ternary weights after reload."""
+    import json
+
+    import torch
+    from safetensors.torch import load_file
+
+    metadata_path = source / "openternary" / "rotations.json"
+    if not metadata_path.is_file():
+        return
+    if manifest is None or manifest.get("format") != "safetensors":
+        raise ValueError("rotated weights require a validated safetensors artifact")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    if (
+        metadata.get("schema_version") != 1
+        or metadata.get("method") != "hadamard-learned-cayley"
+        or metadata.get("transform_order") != ["normalized-hadamard", "learned-cayley"]
+        or metadata.get("matrix_file") != "openternary/rotations.safetensors"
+    ):
+        raise ValueError("unsupported rotation artifact contract")
+    report = json.loads((source / "quantization.json").read_text(encoding="utf-8"))
+    if report.get("rotation") != metadata:
+        raise ValueError("rotation metadata does not match quantization report")
+    matrices = load_file(str(source / metadata["matrix_file"]), device="cpu")
+    entries = metadata.get("rotations")
+    if not isinstance(entries, dict) or not entries or matrices.keys() != entries.keys():
+        raise ValueError("rotation matrices do not match metadata")
+    from openternary.quant.rotation import apply_block_rotation, hadamard_last_dim
+
+    handles = []
+    for module_name, entry in sorted(entries.items()):
+        matrix = matrices[module_name]
+        block_size = entry["block_size"]
+        module = model.get_submodule(module_name)
+        if (
+            block_size != 128
+            or matrix.shape != (128, 128)
+            or matrix.dtype != torch.float32
+            or not torch.isfinite(matrix).all()
+            or module.weight.ndim != 2
+            or module.weight.shape[-1] % block_size
+        ):
+            raise ValueError(f"invalid saved rotation or target module: {module_name}")
+        if (matrix.T @ matrix - torch.eye(block_size)).abs().max().item() > 1e-4:
+            raise ValueError(f"saved rotation is not orthogonal: {module_name}")
+        rotation = matrix.to(module.weight.device)
+
+        def rotate_input(
+            _module: Any, inputs: tuple[torch.Tensor, ...], *, rotation: torch.Tensor = rotation
+        ) -> tuple[torch.Tensor, ...]:
+            transformed = hadamard_last_dim(inputs[0].float(), rotation.shape[0])
+            transformed = apply_block_rotation(transformed, rotation).to(inputs[0].dtype)
+            return (transformed, *inputs[1:])
+
+        handles.append(module.register_forward_pre_hook(rotate_input))
+    model._openternary_rotation_hooks = handles
 
 
 def _load_torchao(config: AppConfig, source: Path, dtype: Any, device_map: Any, model_cls: Any) -> Any:

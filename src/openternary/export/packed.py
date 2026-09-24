@@ -83,6 +83,8 @@ def pack_snapshot(source: Path, destination: Path) -> None:
     from openternary.services.snapshot import SnapshotReader
 
     report = json.loads((source / "quantization.json").read_text(encoding="utf-8"))
+    if report.get("rotation"):
+        raise ValueError("packing rotated weights requires an input-transform runtime contract")
     if report.get("codebook") != [-1, 0, 1]:
         raise ValueError("packing requires a ternary quantization report")
     entries = report.get("per_tensor")

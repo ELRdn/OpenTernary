@@ -31,6 +31,10 @@ def quantize(
     scheme: Annotated[str | None, typer.Option("--scheme")] = None,
     weight_dtype: Annotated[str | None, typer.Option("--weight-dtype")] = None,
     component: Annotated[str | None, typer.Option("--component")] = None,
+    rotation_manifest: Annotated[
+        pathlib.Path | None,
+        typer.Option("--rotation-manifest", help="Learned orthogonal rotations for selected ternary weights"),
+    ] = None,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Show config and exit")] = False,
     verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Verbose")] = False,
 ) -> None:
@@ -48,6 +52,7 @@ def quantize(
             "quantization.scheme": scheme,
             "quantization.weight_dtype": weight_dtype,
             "model.component": component,
+            "quantization.rotation_manifest": str(rotation_manifest.resolve()) if rotation_manifest else None,
         }
     )
     if model is not None:

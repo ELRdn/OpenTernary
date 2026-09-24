@@ -4,6 +4,8 @@ This roadmap prioritizes **research validity and a stable CLI pipeline** over GU
 
 > **CLI product track:** [CLI Product Roadmap](CLI_ROADMAP.md) separately defines CLI-0–CLI-8 for reliability, shared contracts, backend/model integration, export, evaluation, and automation. Its milestones do not replace the research quality gates below.
 
+> **Learned-rotation update — 2026-09-24:** All 35 text `q_proj` tensors were rotated using calibration-trained orthogonal matrices before G128 ternarization. The saved/reloaded mixed-precision snapshot passed the fixed quality gate on v2 validation and a new disjoint v3 test against BF16 on RX 9070 XT. This covers 35 of 205 canonical targets (2.5884% of total parameters); P7 all-205 acceptance remains open. Details: [rotation research record](docs/research/gemma4-q35-learned-rotation-20260924.md).
+
 > **Validation screening update — 2026-09-22:** P0は固定revision/source hash/正準205対象/RX 9070 XTでPASS。P1は実ROCm OOM後のBF16 backward/Adam復旧とtransactional real-pathを確認。P2はcheckpoint v3、tiny mid-step再開同一性、全205 uninterrupted対終端checkpoint再開でloss/fingerprint/22 snapshot file hash完全一致を確認。P3は固定・分離済みvalidationでBF16/naive/scale-only/thresholdを同一protocol評価し、全ternary候補が崩壊gate不合格。P4はrunner/checkpoint/materializeへ接続しlinear/cosine/exponentialを全205でhard保存後評価したが、3候補とも不合格。hard code変化率0は、現実装がscaleのみ学習し、固定weight/reference scaleからhardeningするため構造的に不変と判明した。test splitは未使用、modulation/P5–P7は未実施。詳細は [foundation status](docs/PHASE4_FOUNDATION_STATUS.md) と [P4 redesign decision](docs/plans/p4-soft-to-hard-redesign-decision.md) を参照。
 
 > **Active execution plan:** P0–P7 の固定予算、比較群、品質式、phase gate、P7受入成果物は [P0–P7 research acceptance plan](docs/plans/p0-p7-research-acceptance.md) を正とする。

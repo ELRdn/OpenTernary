@@ -74,6 +74,7 @@ class QuantizationConfig(BaseModel):
     backend_options: dict[str, str | int | float | bool] = Field(default_factory=dict)
     passes: list[PassConfig] = Field(default_factory=list)
     mixed_precision: dict[str, Literal["preserve", "ternary"]] = Field(default_factory=dict)
+    rotation_manifest: str | None = None
     codebook: list[int] | None = Field(default_factory=lambda: [-1, 0, 1])
     group_size: int = Field(default=128, ge=1, description="Group size for group-wise scaling")
     scale_granularity: Literal["per_tensor", "per_group"] = Field(
@@ -87,6 +88,8 @@ class QuantizationConfig(BaseModel):
     @model_validator(mode="after")
     def validate_codebook(self) -> QuantizationConfig:
         if self.backend != "ternary":
+            if self.rotation_manifest:
+                raise ValueError("rotation_manifest requires the ternary backend")
             for key in ("method", "codebook"):
                 if key in self.model_fields_set and getattr(self, key) is not None:
                     raise ValueError(f"legacy quantization.{key} applies to ternary only")

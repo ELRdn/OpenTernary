@@ -266,6 +266,20 @@ def convert_snapshot(
     if not src_root.exists() or not src_root.is_dir():
         raise FileNotFoundError(f"src_snapshot not found: {src_root}")
 
+    rotation_matrices: dict[str, Any] = {}
+    rotation_metadata: dict[str, Any] | None = None
+    rotation_manifest = getattr(app_config.quantization, "rotation_manifest", None)
+    if rotation_manifest:
+        from openternary.quant.rotation import load_rotation_plan
+
+        if (
+            app_config.quantization.scale_granularity != "per_group"
+            or app_config.quantization.group_size != 128
+            or app_config.quantization.passes
+        ):
+            raise ValueError("learned rotation requires G128 per_group without additional passes")
+        rotation_matrices, rotation_metadata = load_rotation_plan(pathlib.Path(rotation_manifest), src_root)
+
     # disk check
     try:
         usage = shutil.disk_usage(dst_root.parent if dst_root.exists() else pathlib.Path.cwd())
@@ -303,6 +317,7 @@ def convert_snapshot(
         tensor_payload_bytes = 0
         total_quantizable = 0
         total_groups = 0
+        used_rotations: set[str] = set()
 
         scale_granularity = str(getattr(app_config.quantization, "scale_granularity", "per_tensor"))
         group_size = int(getattr(app_config.quantization, "group_size", 128))
@@ -345,6 +360,16 @@ def convert_snapshot(
 
                 if quantizable:
                     tensor = apply_passes(tensor, app_config.quantization.passes)
+                    source_dtype = tensor.dtype
+                    module_name = name.removesuffix(".weight")
+                    if module_name in rotation_matrices:
+                        from openternary.quant.rotation import apply_block_rotation, hadamard_last_dim
+
+                        if not name.endswith(".weight") or tensor.ndim != 2 or tensor.shape[-1] % 128:
+                            raise ValueError(f"rotation requires a G128 linear weight: {name}")
+                        matrix = rotation_matrices[module_name]
+                        tensor = apply_block_rotation(hadamard_last_dim(tensor.float(), 128), matrix)
+                        used_rotations.add(module_name)
                     total_quantizable += 1
                     # quantize
                     if scale_granularity == "per_tensor":
@@ -360,7 +385,7 @@ def convert_snapshot(
                         recon = dequantize(tt)  # float32
                         # cast back to original dtype
                         # original tensor dtype
-                        recon_cast = recon.to(tensor.dtype)
+                        recon_cast = recon.to(source_dtype)
                         out_tensor = recon_cast
                         # zero ratio from codes
                         zero_ratio = float((tt.codes == 0).sum().item() / tt.codes.numel()) if tt.codes.numel() else 0.0
@@ -390,7 +415,7 @@ def convert_snapshot(
                         else:
                             scale_min = scale_max = scale_mean = scale_std = 0.0
                         recon = dequantize_groupwise(res)  # float32
-                        recon_cast = recon.to(tensor.dtype)
+                        recon_cast = recon.to(source_dtype)
                         out_tensor = recon_cast
                         zero_ratio = (
                             float((res.codes == 0).sum().item() / res.codes.numel()) if res.codes.numel() else 0.0
@@ -478,6 +503,10 @@ def convert_snapshot(
                     )
 
             # flush remaining
+            if used_rotations != rotation_matrices.keys():
+                raise ValueError(
+                    f"rotation plan contains unselected modules: {sorted(rotation_matrices.keys() - used_rotations)}"
+                )
             if buffer:
                 shard_name = f"model-{shard_index:05d}-of-99999.safetensors"
                 shard_path = tmp_root / shard_name
@@ -613,6 +642,20 @@ def convert_snapshot(
             },
             "per_tensor": per_tensor_entries,
         }
+
+        if rotation_metadata is not None:
+            rotation_dir = tmp_root / "openternary"
+            rotation_dir.mkdir(parents=True, exist_ok=True)
+            safetensors.torch.save_file(rotation_matrices, str(rotation_dir / "rotations.safetensors"))
+            rotation_metadata["matrix_file"] = "openternary/rotations.safetensors"
+            rotation_metadata["transform_order"] = ["normalized-hadamard", "learned-cayley"]
+            (rotation_dir / "rotations.json").write_text(
+                json.dumps(rotation_metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            quantization_json["fake_quant_artifact"]["snapshot_total_bytes"] += sum(
+                p.stat().st_size for p in rotation_dir.iterdir() if p.is_file()
+            )
+            quantization_json["rotation"] = rotation_metadata
 
         # write quantization.json before atomic rename (in tmp)
         with open(tmp_root / "quantization.json", "w", encoding="utf-8") as qf:

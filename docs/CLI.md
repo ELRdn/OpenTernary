@@ -75,7 +75,7 @@ quantization:
     model.layers.0.self_attn.q_proj.weight: preserve
 ```
 
-`mixed_precision`のキーは実際の対象名に置き換える。`clip`は値を変更する前処理で、品質保持を意味しない。`noop`は内容を保持する。passの順序と二重適用を検査し、runtime変更が必要なrotation等は未対応として拒否する。
+`mixed_precision`のキーは実際の対象名に置き換える。`clip`は値を変更する前処理で、品質保持を意味しない。`noop`は内容を保持する。passの順序と二重適用を検査する。学習済み回転は通常のpassではなく、下記の専用manifestで指定する。
 
 ## 変換・保存
 
@@ -89,6 +89,18 @@ openternary quantize "D:/models/pipeline" --component transformer --device cpu -
 ```
 
 TernaryとTorchAOのsnapshot変換はCPUで行う。`--device cuda`は無言でCPUへ戻さず拒否する。変換はsourceの浮動小数点dtypeを保つため、`quantize --dtype`は拒否する。表現は`--weight-dtype`、実推論dtypeはbenchmark/quality設定で指定する。
+
+### Gemma 4 学習済み回転（研究用）
+
+校正活性化で学習した128次元のCayley直交回転を、BF16重みへHadamard変換と同じ順番で適用してからG128三値化する。量子化対象の各Linearについて、重み側の変換と入力側の変換を一体で保存する。`quantize --rotation-manifest <JSON>`が対応し、`quality`/`benchmark`は保存済み変換を自動で読み込む。manifestには元BF16 sourceと各回転ファイルのSHA-256を記録する。選択対象外の回転、異なるsource、非直交行列は拒否する。
+
+```text
+python scripts/make_gemma4_rotation_manifest.py --source "D:/models/gemma4-bf16" --quantized "runs/q35/artifacts/snapshot" --rotation-dir runs --output runs/q35-rotations.json
+openternary quantize --config runs/q35.yaml --rotation-manifest runs/q35-rotations.json --output runs/q35-rotated
+openternary quality runs/q35-rotated/artifacts/snapshot --config configs/gemma4-e2b.yaml --data data/quality/gemma4-e2b-quality-v2.json --split validation --max-length 128 --stride 64 --device cuda --dtype bf16 --output runs/q35-rotated-quality
+```
+
+これはBF16のfake quant snapshotであり、packed三値実行による速度・VRAM・ファイル容量の改善は示さない。回転済みsnapshotの`ternary-packed` exportは、入力変換付きruntimeがないため拒否する。35個の`q_proj`だけを対象にした結果と、正準205対象の研究合格は区別する。
 
 Diffusersではcomponentを明示する。現在の変換対象は認識可能な2次元Linearであり、Conv重みやVAEを含むpipeline全体の低bit対応を意味しない。
 

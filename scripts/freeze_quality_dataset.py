@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import pathlib
 
@@ -17,6 +18,7 @@ def main() -> int:
     parser.add_argument("--calibration-samples", type=int, default=32)
     parser.add_argument("--contexts-per-language-per-split", type=int, default=8)
     parser.add_argument("--instructions-per-language-per-split", type=int, default=4)
+    parser.add_argument("--exclude-dataset", type=pathlib.Path, action="append", default=[])
     args = parser.parse_args()
 
     import pyarrow.parquet as pq
@@ -43,6 +45,30 @@ def main() -> int:
         filename="JSQuAD/jglue-validation.parquet",
     )
     jsquad_rows = pq.read_table(jsquad_path).to_pylist()
+    excluded_sha256s = []
+    excluded_ids = set()
+    excluded_contexts = set()
+    for excluded_path in args.exclude_dataset:
+        excluded_bytes = excluded_path.read_bytes()
+        excluded_sha256s.append(hashlib.sha256(excluded_bytes).hexdigest())
+        excluded = json.loads(excluded_bytes)
+        excluded_ids.update(
+            str(row["id"]).split("-", 2)[-1] for split in ("validation", "test") for row in excluded["splits"][split]
+        )
+        excluded_contexts.update(
+            " ".join(str(row["text"]).split()) for split in ("validation", "test") for row in excluded["splits"][split]
+        )
+    if excluded_sha256s:
+        squad = [
+            row
+            for row in squad
+            if str(row["id"]) not in excluded_ids and " ".join(str(row["context"]).split()) not in excluded_contexts
+        ]
+        jsquad_rows = [
+            row
+            for row in jsquad_rows
+            if str(row["id"]) not in excluded_ids and " ".join(str(row["context"]).split()) not in excluded_contexts
+        ]
     payload = build_quality_dataset(
         calibration_texts=calibration_texts,
         squad_rows=squad,
@@ -55,6 +81,24 @@ def main() -> int:
         contexts_per_language_per_split=args.contexts_per_language_per_split,
         instructions_per_language_per_split=args.instructions_per_language_per_split,
     )
+    if excluded_sha256s:
+        payload["dataset"]["id"] = f"OpenTernary/quality-squad-jsquad-disjoint-v{len(excluded_sha256s) + 1}"
+        if len(excluded_sha256s) == 1:
+            payload["dataset"]["selection"]["excluded_dataset_sha256"] = excluded_sha256s[0]
+        else:
+            payload["dataset"]["selection"]["excluded_dataset_sha256s"] = excluded_sha256s
+        payload["dataset"]["selection"]["cross_dataset_exact_context_disjoint"] = True
+        selected_ids = sorted(row["id"] for split in ("validation", "test") for row in payload["splits"][split])
+        revision_input = json.dumps(
+            {
+                "sources": payload["dataset"]["source"],
+                "selection": payload["dataset"]["selection"],
+                "selected_ids": selected_ids,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        payload["dataset"]["revision"] = f"sha256:{hashlib.sha256(revision_input).hexdigest()}"
     args.output.parent.mkdir(parents=True, exist_ok=True)
     temporary = args.output.with_suffix(args.output.suffix + ".tmp")
     temporary.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")

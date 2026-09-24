@@ -34,9 +34,14 @@ def snapshot_identity(source: Path | None) -> dict[str, Any]:
         "scope": "synthetic" if (source / "openternary-fixture.json").is_file() else "model",
     }
     if (source / MANIFEST).is_file():
-        origin = validate_artifact(source).get("provenance", {}).get("identity")
+        provenance = validate_artifact(source).get("provenance", {})
+        origin = provenance.get("identity")
         if isinstance(origin, dict):
             identity.update(source_fingerprint=origin.get("source_fingerprint"), scope=origin.get("scope", "unknown"))
+        saved_config = provenance.get("config")
+        saved_model = saved_config.get("model") if isinstance(saved_config, dict) else None
+        if isinstance(saved_model, dict) and saved_model.get("revision"):
+            identity["source_revision"] = saved_model["revision"]
     # The marker is metadata, never permission to load arbitrary external weights.
     if (source / "openternary-fixture.json").is_file():
         marker = json.loads((source / "openternary-fixture.json").read_text(encoding="utf-8"))
