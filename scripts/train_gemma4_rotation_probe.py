@@ -1,8 +1,8 @@
 """Optimize one shared orthogonal block rotation before hard G128 ternarization.
 
 Uses only the existing calibration train and held activation caches. The saved
-rotation is a research artifact; the standard Gemma 4 loader has no matching
-input-transform contract yet.
+rotation is a research artifact. Package it with a rotation manifest and the
+CLI quantize command before evaluating a saved model.
 """
 
 from __future__ import annotations
@@ -153,7 +153,7 @@ def main() -> None:
         "unquantized_function_rel_mse": unquantized_rel_mse,
         "elapsed_s": time.monotonic() - started,
         "history": history,
-        "artifact_note": "requires matching input rotation; not loadable by standard CLI",
+        "artifact_note": "matrix-only artifact; package with a rotation manifest and CLI quantize",
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     save_file({"cayley_rotation": best_rotation.cpu().contiguous()}, str(args.output.with_suffix(".safetensors")))

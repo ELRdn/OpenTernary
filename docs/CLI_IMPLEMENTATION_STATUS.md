@@ -6,7 +6,7 @@
 
 **CLI-0〜8の製品実装と、固定したpretrainedモデルでの実挙動検証まで完了。** Windows／WSLのCPU wheel、WindowsのRX 9070 XT FP32・BF16、人工LlamaのGGUF CPU実行に加え、Gemma 4 E2BのBF16・Ternary・TorchAO INT8、pretrained tiny Stable DiffusionのUNet差し替えを確認した。
 
-Gemma 4の正準205対象Ternary経路は変換・保存・packed round-trip・別process推論まで成功したが、品質Gateは不合格。追加研究では回転を学習した35個の`q_proj`をG128三値化した混合精度snapshotが、保存・再読込後にv2 validationと独立v3 testの固定Gateに合格した（[研究記録](research/gemma4-q35-learned-rotation-20260924.md)）。残り170対象はBF16であり、205対象の品質合格ではない。TorchAO 0.18.0 INT8 weight-onlyは同じvalidation protocolで品質Gateに合格した。TorchAOのGPU演算は `to → mm → mul` を観測し、native INT8 matmulとは認定しない。既存の研究run・モデルcache・`.venv`／`.venv-rocm`は保持。公開releaseはproject licenseの権利者判断待ち。
+Gemma 4の正準205対象Ternary経路は変換・保存・packed round-trip・別process推論まで成功したが、品質Gateは不合格。追加研究では回転を学習した35個の`q_proj`をG128三値化した混合精度snapshotが、保存・再読込後にv2 validationと独立v3 testの固定Gateに合格したが、別のv4 validationでは指示Gateに不合格だった。200ステップで再学習した35対象版は保存・再読込後にv4 validationを通過したが、独立v5 testでは指示正答率がBF16比3.125ポイント下がり固定Gateに不合格（[研究記録](research/gemma4-q35-learned-rotation-20260924.md)）。残り170対象はBF16。全205対象の学習済み回転候補も保存・再読込できたがv4では品質崩壊し、研究合格には至っていない。TorchAO 0.18.0 INT8 weight-onlyは同じvalidation protocolで品質Gateに合格した。TorchAOのGPU演算は `to → mm → mul` を観測し、native INT8 matmulとは認定しない。既存の研究run・モデルcache・`.venv`／`.venv-rocm`は保持。公開releaseはproject licenseの権利者判断待ち。
 
 ## 環境別の対応表
 

@@ -13,6 +13,7 @@ def main() -> None:
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--quantized", type=Path, required=True)
     parser.add_argument("--rotation-dir", type=Path, required=True)
+    parser.add_argument("--other-rotation-dir", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     source = args.source.resolve()
@@ -23,10 +24,13 @@ def main() -> None:
     rotations = {}
     for weight_name in selected:
         module_name = weight_name.removesuffix(".weight")
-        if not module_name.endswith(".self_attn.q_proj"):
-            raise ValueError(f"no learned q rotation for selected module: {module_name}")
-        layer = int(module_name.split(".layers.")[1].split(".")[0])
-        path = args.rotation_dir / f"gemma4-q{layer}-learned-rotation-20260924.safetensors"
+        if module_name.endswith(".self_attn.q_proj"):
+            layer = int(module_name.split(".layers.")[1].split(".")[0])
+            path = args.rotation_dir / f"gemma4-q{layer}-learned-rotation-20260924.safetensors"
+        elif args.other_rotation_dir:
+            path = args.other_rotation_dir / f"{module_name}.safetensors"
+        else:
+            raise ValueError(f"no learned rotation for selected module: {module_name}")
         report = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
         if report["module"] != module_name or Path(report["source"]).resolve() != source:
             raise ValueError(f"rotation provenance mismatch: {module_name}")

@@ -74,6 +74,9 @@ def _install_rotations(model: Any, source: Path, manifest: dict[str, Any] | None
 
     metadata_path = source / "openternary" / "rotations.json"
     if not metadata_path.is_file():
+        report_path = source / "quantization.json"
+        if report_path.is_file() and json.loads(report_path.read_text(encoding="utf-8")).get("rotation"):
+            raise ValueError("rotated weights are missing their required input transform")
         return
     if manifest is None or manifest.get("format") != "safetensors":
         raise ValueError("rotated weights require a validated safetensors artifact")

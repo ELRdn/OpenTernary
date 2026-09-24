@@ -58,8 +58,8 @@ All conditions must pass:
 | P3 | General/Japanese PPL, instruction following, collapse checks; BF16/naive/scale-only/threshold controls | Frozen disjoint data and verified matched evaluation implementation | Evaluation gate PASS; schema-v2 reports preserve prior metrics, save hash-verified responses, and audit instruction near-duplicates; all ternary controls fail quality on validation |
 | P4 | Compare temperature schedules and zero-code modulation independently | Winner passes on final hard saved validation snapshot | Production integration PASS; linear/cosine/exponential hard snapshots FAIL; no winner |
 | P5 | Scale Linear → one block → several adjacent blocks; include upstream quantization error | Improvement over layer-local under the same calibration budget, with cost reported | Not started |
-| P6 | Prove non-quantized equivalence → fixed rotations → learned rotation/asymmetric ablations | Correct input/export contract and validation-selected candidate | Not started |
-| P7 | Apply selected configuration to all 205 targets; independent test and repeat seeds | Quality, reproducibility, resource, implementation, docs, CLI, and experiment record all pass | Not started |
+| P6 | Prove non-quantized equivalence → fixed rotations → learned rotation/asymmetric ablations | Correct input/export contract and validation-selected candidate | Partially exercised: learned-rotation CLI input contract and q35 save/reload verified; 200-step q35 passed v4 validation but failed independent v5 test. Fixed/asymmetric ablations and phase acceptance remain open. |
+| P7 | Apply selected configuration to all 205 targets; independent test and repeat seeds | Quality, reproducibility, resource, implementation, docs, CLI, and experiment record all pass | Exploratory saved 50-step and in-memory 200-step 205-target candidates both failed v4 validation; no selected P6 configuration or P7 acceptance. |
 
 ## 5. P3 matched controls
 

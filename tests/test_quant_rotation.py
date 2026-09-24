@@ -75,3 +75,9 @@ def test_saved_rotation_requires_matching_report(tmp_path) -> None:
     (folder / "rotations.json").write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
     with pytest.raises(ValueError, match="validated safetensors"):
         _install_rotations(torch.nn.Linear(128, 7), tmp_path, None)
+
+
+def test_rotated_report_requires_input_transform(tmp_path) -> None:
+    (tmp_path / "quantization.json").write_text(json.dumps({"rotation": {"schema_version": 1}}), encoding="utf-8")
+    with pytest.raises(ValueError, match="missing their required input transform"):
+        _install_rotations(torch.nn.Linear(128, 7), tmp_path, {"format": "safetensors"})
