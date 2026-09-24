@@ -15,6 +15,8 @@ Product planning: [CLI Product Roadmap](CLI_ROADMAP.md) covers CLI reliability, 
 
 **Rotation pilot (2026-09-25):** A saved/reloaded hard-G128 candidate with eight of the 205 canonical targets passed the fixed v4 validation and disjoint v5 test against BF16 on the same RX 9070 XT. End-to-end retraining of the eighth target for 200 steps worsened model quality despite lowering calibration loss. This is a partial research result, not an accepted 205-target model; see the [blockwise research record](docs/research/gemma4-blockwise-hard-ternary-20260925.md).
 
+**Fixed Hadamard follow-up (2026-09-25):** Signed H128/H256/H512/H1024 G128 post-training conversion improved the first 14 targets over no rotation in some cases, but none passed the frozen v4 quality gate. Applying signed H1024 to all 205 targets yielded English/Japanese PPL 7261.13/22939.74 and 0% instruction exact match against BF16 1355.44/1725.48 and 57.8125%. The all-target result is an in-memory screen; no accepted saved/reloaded 205-target candidate exists. Details: [fixed signed Hadamard research record](docs/research/gemma4-fixed-signed-hadamard-20260925.md).
+
 ---
 
 ## Quickstart (core CLI)

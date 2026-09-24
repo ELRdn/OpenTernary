@@ -26,6 +26,36 @@ def hadamard_last_dim(x: torch.Tensor, block_size: int) -> torch.Tensor:
     return (y / math.sqrt(block_size)).reshape(original_shape)
 
 
+def hadamard_segments(dimension: int, max_block_size: int) -> tuple[int, ...]:
+    """Partition a feature axis into the largest available power-of-two blocks."""
+    if dimension < 2 or max_block_size < 2 or max_block_size & (max_block_size - 1):
+        raise ValueError("dimension and max_block_size must allow power-of-two blocks")
+    sizes: list[int] = []
+    remaining = dimension
+    while remaining:
+        size = min(max_block_size, 1 << (remaining.bit_length() - 1))
+        if size < 2:
+            raise ValueError("feature dimension cannot be partitioned into Hadamard blocks")
+        sizes.append(size)
+        remaining -= size
+    return tuple(sizes)
+
+
+def signed_hadamard_last_dim(x: torch.Tensor, max_block_size: int, signs: torch.Tensor) -> torch.Tensor:
+    """Apply one fixed signed, normalized Hadamard map per feature segment."""
+    if signs.ndim != 1 or signs.numel() != x.shape[-1] or not torch.all((signs == 1) | (signs == -1)):
+        raise ValueError("signs must contain exactly one +1 or -1 per feature")
+    if signs.device != x.device:
+        raise ValueError("signs and input must be on the same device")
+    segments = hadamard_segments(x.shape[-1], max_block_size)
+    outputs = []
+    offset = 0
+    for size in segments:
+        outputs.append(hadamard_last_dim(x[..., offset : offset + size] * signs[offset : offset + size], size))
+        offset += size
+    return torch.cat(outputs, dim=-1)
+
+
 def cayley_orthogonal(skew: torch.Tensor) -> torch.Tensor:
     """Map a finite skew-symmetric matrix to an orthogonal matrix."""
     if skew.ndim != 2 or skew.shape[0] != skew.shape[1]:

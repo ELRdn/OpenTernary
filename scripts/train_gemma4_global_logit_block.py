@@ -22,6 +22,31 @@ from openternary.quant.logit_ste import hard_logit_codes, ste_logit_codes
 from openternary.quant.rotation import apply_block_rotation, hadamard_last_dim, load_rotation_plan
 
 
+def ground_truth_next_token_ce(
+    log_probs: torch.Tensor,
+    example: dict[str, Any],
+    *,
+    qa_first_weight: float = 1.0,
+    qa_end_weight: float = 1.0,
+) -> torch.Tensor:
+    """Score the next real token on text/chat rows or the answer span on QA rows."""
+    ids = example["inputs"]["input_ids"]
+    attention = example["inputs"]["attention_mask"]
+    mask = (example["loss_mask"][..., :-1] * attention[..., 1:]).float()
+    if log_probs.shape[:2] != ids.shape or mask.sum() == 0:
+        raise ValueError("invalid or empty next-token calibration span")
+    if example.get("kind") == "qa" and (qa_first_weight != 1.0 or qa_end_weight != 1.0):
+        if mask.shape[0] != 1:
+            raise ValueError("weighted QA calibration requires batch size one")
+        positions = mask[0].nonzero().flatten()
+        mask = mask.clone()
+        mask[0, positions[0]] *= qa_first_weight
+        # The final chat-template token is a newline; the preceding one ends the answer turn.
+        mask[0, positions[-2] if positions.numel() >= 2 else positions[-1]] *= qa_end_weight
+    selected = log_probs[..., :-1, :].gather(-1, ids[..., 1:].unsqueeze(-1)).squeeze(-1)
+    return -(selected * mask).sum() / mask.sum()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", type=Path, required=True)
@@ -36,10 +61,14 @@ def main() -> None:
     parser.add_argument("--code-lr", type=float, default=0.005)
     parser.add_argument("--top-k", type=int, default=64)
     parser.add_argument("--teacher-top1-weight", type=float, default=0.0)
+    parser.add_argument("--ground-truth-weight", type=float, default=0.0)
+    parser.add_argument("--qa-first-weight", type=float, default=1.0)
+    parser.add_argument("--qa-end-weight", type=float, default=1.0)
     parser.add_argument("--japanese-loss-weight", type=float, default=1.0)
     parser.add_argument("--shuffle-train", action="store_true")
     parser.add_argument("--seq-len", type=int, default=128)
     parser.add_argument("--upstream-block-dir", type=Path)
+    parser.add_argument("--fixed-q-report", type=Path)
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
     if (
@@ -51,17 +80,24 @@ def main() -> None:
         or args.code_lr <= 0
         or args.top_k < 2
         or args.teacher_top1_weight < 0
+        or args.ground_truth_weight < 0
+        or min(args.qa_first_weight, args.qa_end_weight) <= 0
         or args.japanese_loss_weight <= 0
         or args.seq_len < 8
+        or (args.fixed_q_report is not None and (args.layer != 1 or args.upstream_block_dir is None))
     ):
         raise ValueError("invalid training arguments or output exists")
     started = time.monotonic()
     source = args.source.resolve()
     rotations, _ = load_rotation_plan(args.rotation_manifest, source)
     prefix = f"model.language_model.layers.{args.layer}."
-    selected = {name: matrix.to("cuda:0") for name, matrix in rotations.items() if name.startswith(prefix)}
-    if len(selected) != (7 if args.layer < 15 else 5):
+    all_selected = {name: matrix.to("cuda:0") for name, matrix in rotations.items() if name.startswith(prefix)}
+    if len(all_selected) != (7 if args.layer < 15 else 5):
         raise ValueError("incomplete canonical target set")
+    fixed_q_name = f"{prefix}self_attn.q_proj" if args.fixed_q_report is not None else None
+    if fixed_q_name is not None and fixed_q_name not in all_selected:
+        raise ValueError("fixed q projection is not canonical")
+    selected = {name: matrix for name, matrix in all_selected.items() if name != fixed_q_name}
     report_path = args.initial_block_dir / f"layer{args.layer}.json"
     artifact_path = report_path.with_suffix(".safetensors")
     initial_report = json.loads(report_path.read_text(encoding="utf-8"))
@@ -71,7 +107,7 @@ def main() -> None:
         initial_report.get("artifact_sha256") != initial_sha256
         or initial_report.get("rotation_manifest_sha256") != manifest_sha256
         or Path(initial_report.get("source", "")).resolve() != source
-        or set(initial_report.get("selected_modules", [])) != set(selected)
+        or set(initial_report.get("selected_modules", [])) != set(all_selected)
     ):
         raise ValueError("initial block provenance mismatch")
     initial = load_file(str(artifact_path), device="cpu")
@@ -130,6 +166,7 @@ def main() -> None:
                         "rest_prob": rest_prob.detach(),
                         "loss_mask": batch.get("loss_mask", batch["attention_mask"]).unsqueeze(0).to("cuda:0"),
                         "language": calibration_row["language"],
+                        "kind": calibration_row["kind"],
                     }
                 )
     pre.remove()
@@ -180,6 +217,40 @@ def main() -> None:
 
                     upstream_hooks.append(model.get_submodule(name).register_forward_pre_hook(rotate_input))
                 upstream_artifacts[str(previous_layer)] = digest
+
+    fixed_q_sha256 = None
+    fixed_q_hook = None
+    if args.fixed_q_report is not None:
+        assert fixed_q_name is not None
+        fixed_q_artifact = args.fixed_q_report.with_suffix(".safetensors")
+        fixed_q_report = json.loads(args.fixed_q_report.read_text(encoding="utf-8"))
+        fixed_q_sha256 = hashlib.sha256(fixed_q_artifact.read_bytes()).hexdigest()
+        if (
+            fixed_q_report.get("artifact_sha256") != fixed_q_sha256
+            or fixed_q_report.get("rotation_manifest_sha256") != manifest_sha256
+            or fixed_q_report.get("upstream_artifact_sha256") != upstream_artifacts["0"]
+            or Path(fixed_q_report.get("source", "")).resolve() != source
+            or fixed_q_report.get("module") != fixed_q_name
+        ):
+            raise ValueError("fixed q artifact provenance mismatch")
+        fixed_q = load_file(str(fixed_q_artifact), device="cpu")
+        weight = fixed_q["weight"]
+        codes = fixed_q["codes"]
+        scales = fixed_q["scales"]
+        if set(fixed_q) != {"rotation", "weight", "codes", "scales"} or not torch.equal(
+            (codes.float().reshape(-1, 128) * scales.reshape(-1, 1)).reshape_as(weight).to(torch.bfloat16),
+            weight,
+        ):
+            raise ValueError("fixed q hard weight mismatch")
+        with torch.no_grad():
+            parameters[fixed_q_name + ".weight"].copy_(weight.to("cuda:0"))
+        fixed_q_rotation = fixed_q["rotation"].to("cuda:0")
+
+        def rotate_fixed_q(_module: torch.nn.Module, values: tuple[torch.Tensor, ...]) -> tuple[torch.Tensor, ...]:
+            transformed = apply_block_rotation(hadamard_last_dim(values[0].float(), 128), fixed_q_rotation)
+            return (transformed.to(values[0].dtype), *values[1:])
+
+        fixed_q_hook = model.get_submodule(fixed_q_name).register_forward_pre_hook(rotate_fixed_q)
 
     states = {}
     hooks = []
@@ -236,6 +307,13 @@ def main() -> None:
             objective_value = kl + args.teacher_top1_weight * top1_ce
         else:
             objective_value = kl
+        if args.ground_truth_weight:
+            objective_value = objective_value + args.ground_truth_weight * ground_truth_next_token_ce(
+                student_log_probs,
+                example,
+                qa_first_weight=args.qa_first_weight,
+                qa_end_weight=args.qa_end_weight,
+            )
         return objective_value * (args.japanese_loss_weight if example["language"] == "ja" else 1.0)
 
     def evaluate(split: str) -> float:
@@ -249,7 +327,7 @@ def main() -> None:
         optimizer_groups.append({"params": [state["code_logits"] for state in states.values()], "lr": args.code_lr})
     optimizer = torch.optim.Adam(optimizer_groups)
     trainable = [parameter for group in optimizer_groups for parameter in group["params"]]
-    metric_label = "objective" if args.teacher_top1_weight else "kl"
+    metric_label = "objective" if args.teacher_top1_weight or args.ground_truth_weight else "kl"
     held_key = f"held_{metric_label}"
 
     def code_change_ratio() -> float:
@@ -343,6 +421,7 @@ def main() -> None:
         "calibration_file_sha256": hashlib.sha256(calibration_raw).hexdigest(),
         "initial_artifact_sha256": initial_sha256,
         "upstream_artifact_sha256": upstream_artifacts,
+        "fixed_q_artifact_sha256": fixed_q_sha256,
         "layer": args.layer,
         "selected_modules": sorted(selected),
         "bf16_replay_exact": True,
@@ -351,6 +430,9 @@ def main() -> None:
         "steps": args.steps,
         "top_k": args.top_k,
         "teacher_top1_weight": args.teacher_top1_weight,
+        "ground_truth_weight": args.ground_truth_weight,
+        "qa_first_weight": args.qa_first_weight,
+        "qa_end_weight": args.qa_end_weight,
         "japanese_loss_weight": args.japanese_loss_weight,
         "shuffle_train": args.shuffle_train,
         "train_hard_codes": args.train_hard_codes,
@@ -367,6 +449,8 @@ def main() -> None:
         hook.remove()
     for hook in upstream_hooks:
         hook.remove()
+    if fixed_q_hook is not None:
+        fixed_q_hook.remove()
     print(json.dumps({"best": best, "artifact_sha256": artifact_sha256}), flush=True)
 
 

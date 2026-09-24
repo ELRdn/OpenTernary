@@ -25,6 +25,8 @@ def main() -> None:
     parser.add_argument("--rotation-manifest", type=Path, required=True)
     parser.add_argument("--upstream-block-dir", type=Path, required=True)
     parser.add_argument("--candidate-report", type=Path, required=True)
+    parser.add_argument("--additional-block-report", type=Path)
+    parser.add_argument("--additional-roles", nargs="+")
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--baseline-quality", type=Path, required=True)
     parser.add_argument("--split", choices=("validation", "test"), required=True)
@@ -60,6 +62,37 @@ def main() -> None:
         raise ValueError("candidate provenance mismatch")
     upstream = load_file(str(layer0_artifact), device="cpu")
     candidate = load_file(str(candidate_artifact), device="cpu")
+    additional = None
+    additional_sha = None
+    additional_names: set[str] = set()
+    if args.additional_roles and args.additional_block_report is None:
+        raise ValueError("additional roles require an additional block report")
+    if args.additional_block_report is not None:
+        additional_artifact = args.additional_block_report.with_suffix(".safetensors")
+        additional_report = json.loads(args.additional_block_report.read_text(encoding="utf-8"))
+        additional_sha = hashlib.sha256(additional_artifact.read_bytes()).hexdigest()
+        available_names = {
+            item for item in rotations if item.startswith("model.language_model.layers.1.") and item != name
+        }
+        available_roles = {item.rsplit(".", 1)[-1] for item in available_names}
+        if args.additional_roles and not set(args.additional_roles) <= available_roles:
+            raise ValueError("unknown additional module role")
+        additional_names = {
+            item
+            for item in available_names
+            if not args.additional_roles or item.rsplit(".", 1)[-1] in args.additional_roles
+        }
+        reported_names = set(additional_report.get("selected_modules", []))
+        if (
+            additional_report.get("artifact_sha256") != additional_sha
+            or additional_report.get("rotation_manifest_sha256") != manifest_sha
+            or Path(additional_report.get("source", "")).resolve() != source
+            or reported_names not in (available_names, available_names | {name})
+            or (reported_names == available_names and additional_report.get("fixed_q_artifact_sha256") != candidate_sha)
+            or additional_report.get("upstream_artifact_sha256") not in ({"0": layer0_sha}, layer0_sha)
+        ):
+            raise ValueError("additional block provenance mismatch")
+        additional = load_file(str(additional_artifact), device="cpu")
     if set(candidate) != {"rotation", "weight", "codes", "scales"}:
         raise ValueError("unexpected candidate tensors")
     identity = torch.eye(128)
@@ -81,11 +114,16 @@ def main() -> None:
     parameters = dict(model.named_parameters())
     handles = []
     with torch.no_grad():
-        for module_name in sorted(layer0_names | {name}):
+        for module_name in sorted(layer0_names | {name} | additional_names):
             if module_name == name:
                 tensors = candidate
                 prefix = ""
                 matrix = candidate["rotation"]
+            elif module_name in additional_names:
+                assert additional is not None
+                tensors = additional
+                prefix = module_name + "."
+                matrix = rotations[module_name]
             else:
                 tensors = upstream
                 prefix = module_name + "."
@@ -133,11 +171,14 @@ def main() -> None:
         raise ValueError("quality protocol or data mismatch")
     gate = compare_quality_metrics(baseline["summary"], quality["summary"])
     result = {
-        "status": "saved_eight_target_quality_only",
+        "status": "saved_rotated_hard_ternary_quality_only",
         "source": str(source),
         "split": args.split,
         "candidate_artifact_sha256": candidate_sha,
         "upstream_artifact_sha256": layer0_sha,
+        "additional_artifact_sha256": additional_sha,
+        "ternary_module_count": len(layer0_names) + 1 + len(additional_names),
+        "additional_roles": sorted(item.rsplit(".", 1)[-1] for item in additional_names),
         "source_identity": baseline["identity"],
         "baseline_summary": baseline["summary"],
         "candidate_summary": quality["summary"],

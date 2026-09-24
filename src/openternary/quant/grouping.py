@@ -162,6 +162,34 @@ def quantize_groupwise(
     )
 
 
+def refine_groupwise_least_squares(w: torch.Tensor, initial: GroupwiseResult, steps: int) -> GroupwiseResult:  # type: ignore
+    """Alternate exact scale fitting and nearest ternary code assignment per full group."""
+    _require_torch()
+    if steps < 1 or tuple(w.shape) != initial.shape or w.shape[-1] % initial.group_size:
+        raise ValueError("refinement requires positive steps and complete matching groups")
+    if w.device != initial.codes.device or w.device != initial.scales.device:
+        raise ValueError("refinement inputs must share a device")
+    if not torch.isfinite(w).all() or not torch.isfinite(initial.scales).all():
+        raise ValueError("refinement requires finite weights and scales")
+    values = w.detach().float().reshape(-1, initial.group_size)
+    codes = initial.codes.float().reshape_as(values)
+    scales = initial.scales.float().reshape(-1, 1)
+    for _ in range(steps):
+        count = codes.square().sum(dim=-1, keepdim=True)
+        fitted = (values * codes).sum(dim=-1, keepdim=True) / count.clamp_min(1)
+        scales = torch.where(count > 0, fitted.clamp_min(0), scales)
+        codes = torch.round(values / scales.clamp_min(1e-12)).clamp(-1, 1)
+        codes = torch.where(scales > 0, codes, torch.zeros_like(codes))
+    return GroupwiseResult(
+        codes=codes.to(torch.int8).reshape(initial.shape),
+        scales=scales.reshape(-1),
+        shape=initial.shape,
+        orig_dtype=initial.orig_dtype,
+        group_size=initial.group_size,
+        grouping_scheme=initial.grouping_scheme,
+    )
+
+
 def dequantize_groupwise(res: GroupwiseResult) -> torch.Tensor:  # type: ignore
     """Group-wise dequantize: each group codes * scale (vectorized)."""
     _require_torch()

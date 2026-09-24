@@ -8,7 +8,13 @@ import torch.nn.functional as functional
 from safetensors.torch import save_file
 
 from openternary.adapters.runtime import _install_rotations
-from openternary.quant.rotation import apply_block_rotation, cayley_orthogonal, hadamard_last_dim
+from openternary.quant.rotation import (
+    apply_block_rotation,
+    cayley_orthogonal,
+    hadamard_last_dim,
+    hadamard_segments,
+    signed_hadamard_last_dim,
+)
 
 
 @pytest.mark.parametrize("block_size", [2, 4, 8, 16])
@@ -39,6 +45,23 @@ def test_cayley_rotation_preserves_linear_function() -> None:
     weights = torch.randn(5, 16, generator=generator)
     transformed = functional.linear(apply_block_rotation(inputs, rotation), apply_block_rotation(weights, rotation))
     assert torch.allclose(transformed, functional.linear(inputs, weights), atol=1e-5)
+
+
+def test_signed_hadamard_preserves_linear_function_with_1536_input() -> None:
+    generator = torch.Generator().manual_seed(17)
+    inputs = torch.randn(3, 1536, generator=generator)
+    weights = torch.randn(4, 1536, generator=generator)
+    signs = torch.randint(0, 2, (1536,), generator=generator).float() * 2 - 1
+    assert hadamard_segments(1536, 1024) == (1024, 512)
+    actual = functional.linear(
+        signed_hadamard_last_dim(inputs, 1024, signs), signed_hadamard_last_dim(weights, 1024, signs)
+    )
+    assert torch.allclose(actual, functional.linear(inputs, weights), atol=1e-4, rtol=1e-5)
+
+
+def test_signed_hadamard_rejects_invalid_signs() -> None:
+    with pytest.raises(ValueError, match="signs"):
+        signed_hadamard_last_dim(torch.ones(2, 128), 128, torch.zeros(128))
 
 
 def test_cayley_rejects_nonskew_matrix() -> None:

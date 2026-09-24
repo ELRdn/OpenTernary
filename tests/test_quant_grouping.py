@@ -10,6 +10,7 @@ from openternary.quant.grouping import (  # noqa: E402
     dequantize_groupwise,
     num_groups_for_shape,
     quantize_groupwise,
+    refine_groupwise_least_squares,
 )
 
 
@@ -48,6 +49,10 @@ def test_groupwise_zero_branch() -> None:
     assert torch.all(recon == 0)
     assert not torch.isnan(recon).any()
 
+    refined = refine_groupwise_least_squares(w, res, 3)
+    assert torch.equal(refined.codes, res.codes)
+    assert torch.equal(refined.scales, res.scales)
+
     # mixed: one group zero, one non-zero
     w2 = torch.tensor([[0.0, 0.0, 3.0, 4.0]])
     res2 = quantize_groupwise(w2, 2)
@@ -56,6 +61,21 @@ def test_groupwise_zero_branch() -> None:
     assert res2.scales[1].item() != 0.0
     assert res2.codes[0, 0].item() == 0 and res2.codes[0, 1].item() == 0
     assert not torch.isnan(dequantize_groupwise(res2)).any()
+
+
+def test_groupwise_refinement_reduces_error_without_changing_code_range() -> None:
+    generator = torch.Generator().manual_seed(19)
+    weights = torch.randn(6, 128, generator=generator)
+    initial = quantize_groupwise(weights, 128)
+    refined = refine_groupwise_least_squares(weights, initial, 5)
+    initial_mse = (weights - dequantize_groupwise(initial)).square().mean()
+    refined_mse = (weights - dequantize_groupwise(refined)).square().mean()
+    assert refined_mse < initial_mse
+    assert set(refined.codes.unique().tolist()) <= {-1, 0, 1}
+    with pytest.raises(ValueError, match="complete matching groups"):
+        refine_groupwise_least_squares(torch.ones(2, 127), initial, 2)
+    with pytest.raises(ValueError, match="finite weights"):
+        refine_groupwise_least_squares(weights.fill_(float("nan")), initial, 2)
 
 
 def test_groupwise_tail_handling() -> None:
