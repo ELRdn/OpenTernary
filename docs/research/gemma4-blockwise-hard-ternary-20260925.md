@@ -58,3 +58,22 @@ To isolate block-1 sensitivity, each saved hard ternary projection was added sep
 | down_proj | 8 | 1412.438 | 1728.827 | 50.0% | FAIL |
 
 Only `v_proj` passed this validation gate as an isolated addition. It has not been materialized as a CLI snapshot or tested on an untouched split. Every other individual addition failed, so the full block-1 failure is not attributable solely to interactions among its seven projections. The experiment records are under `runs/gemma4-global-qa-hard-layer1-top1-*`, `runs/gemma4-global-qa-hard-layer1-large-*`, and `runs/gemma4-blockwise-role-screen-20260925/`.
+
+## BF16 global rotation before hard ternary: layer-1 q pilot
+
+The CLI already accepts a learned rotation plan with `quantize --rotation-manifest`; the previously saved/reloaded 205-target fake-quant snapshot exercised that path and failed model-level quality. The new `scripts/train_gemma4_global_rotation_q1.py` instead updates one 128-by-128 Cayley rotation using BF16 teacher top-64 output distillation, then hardens the rotated BF16 weight with the existing AbsMean G128 codes and scales. Seven layer-0 targets use the saved mixed-calibration hard block. The optimized q1 rotation and hard codes are saved, reloaded, and checked for exact weight reconstruction. This combination is an eight-target research artifact; the CLI does not yet train its rotation or import the separately reconstructed layer-0 block as a single `quantize` input.
+
+The numerical preflight checked rotation orthogonality, pre-quantization linear equivalence, code/scale equality with `quantize_groupwise`, and finite STE gradients. The corrected 384/128-row calibration set above supplies disjoint calibration train/held examples. All quality comparisons below use the same RX 9070 XT, BF16 runtime, source and interface identity, 128-token PPL windows, and greedy instruction protocol. Both candidate evaluations load saved hard weights. The v5 test process independently reloads the two artifacts with `scripts/evaluate_gemma4_global_rotation_q1.py` and validates hashes, source identity, data fingerprint, and protocol fingerprint.
+
+| Eight-target candidate | Split | English PPL | Japanese PPL | Instruction | Collapse | Gate |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| BF16 source | v4 validation | 1355.436 | 1725.479 | 57.8125% | 0/64 | Reference |
+| 2 train / 1 held, best step 1 of 1 | v4 validation | 1136.751 | 1421.092 | 56.25% | 0/64 | PASS |
+| 96 train / 32 held, best step 80 of 200 | v4 validation | 1450.878 | 1962.070 | 54.6875% | 0/64 | FAIL |
+| 96 train / 32 held, best step 0 of 1 | v4 validation | 1128.167 | 1419.834 | 56.25% | 0/64 | PASS |
+| BF16 source | v5 test | 1274.036 | 1418.493 | 59.375% | 0/64 | Reference |
+| Saved/reloaded 96/32 step-0 candidate | v5 test | 1176.952 | 1167.171 | 57.8125% | 0/64 | PASS |
+
+The 200-step run lowered calibration held objective from 0.201009 to 0.172625 at step 80, changing 11.214% of q1 hard codes, yet failed every non-collapse v4 gate. A lower teacher-output loss therefore did not predict model-level quality. The one-step 96/32 run selected its initial rotation because its held objective worsened at step 1; it validates the rotate-then-ternarize path, but does not show that end-to-end rotation retraining improved quality. The tiny 2/1 pilot did select a changed rotation but is insufficient evidence for a stable training gain. The v5 test split is disjoint from v4, but was previously opened for a different q35 experiment, so this is additional evidence rather than a pristine final test. No all-205 quality claim follows from eight targets, and native packed ternary execution remains unimplemented.
+
+Artifacts: `runs/gemma4-global-rotation-q1-{smoke,early1}-20260925.{json,safetensors,quality.json}`, `runs/gemma4-global-rotation-q1-20260925.{json,safetensors,quality.json}`, and `runs/gemma4-global-rotation-q1-early1-v5-test-20260925.{json,quality.json}`. The selected step-0 artifact SHA-256 is `2c064956166078660a14853a8c9ffc262a6892373d848ca6f3d0cc733b124a03`; the layer-0 artifact SHA-256 is `06c3b261799a2b177664ba23162e9827daa827e898b70a1842c7d63569e0ca6f`.

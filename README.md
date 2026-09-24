@@ -13,6 +13,8 @@ Product planning: [CLI Product Roadmap](CLI_ROADMAP.md) covers CLI reliability, 
 
 **CLI implementation update (2026-09-25):** CLI-0–CLI-8 are implemented and validated with synthetic fixtures, installed Windows/WSL wheels, RX 9070 XT execution, pinned llama.cpp CPU generation, Gemma 4 E2B, TorchAO 0.18.0 INT8 weight-only, and a pretrained tiny Stable Diffusion pipeline. The canonical 205-target Gemma Ternary candidate fails the frozen quality gate, including after independent learned rotations. A learned-rotation mixed-precision candidate with 35 ternary q projections passed v2 validation and an independent v3 test but failed the v4 validation instruction gate. A retrained 200-step version passed v4 validation after saving and reloading, then failed the independent v5 test instruction gate; [the research record](docs/research/gemma4-q35-learned-rotation-20260924.md) gives the measurements and limits. TorchAO passes its single validation gate while using ordinary matmul rather than a certified native INT8 kernel. Native packed Ternary runtime and the project-license decision remain outside the completed CLI implementation. See the [CLI guide](docs/CLI.md) and [implementation/validation matrix](docs/CLI_IMPLEMENTATION_STATUS.md).
 
+**Rotation pilot (2026-09-25):** A saved/reloaded hard-G128 candidate with eight of the 205 canonical targets passed the fixed v4 validation and disjoint v5 test against BF16 on the same RX 9070 XT. End-to-end retraining of the eighth target for 200 steps worsened model quality despite lowering calibration loss. This is a partial research result, not an accepted 205-target model; see the [blockwise research record](docs/research/gemma4-blockwise-hard-ternary-20260925.md).
+
 ---
 
 ## Quickstart (core CLI)
