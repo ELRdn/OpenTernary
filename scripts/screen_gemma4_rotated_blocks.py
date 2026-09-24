@@ -26,6 +26,9 @@ def main() -> None:
     parser.add_argument("--rotation-manifest", type=Path, required=True)
     parser.add_argument("--block-dir", type=Path, required=True)
     parser.add_argument("--through-layer", type=int, default=34)
+    parser.add_argument(
+        "--layer1-role", choices=("q_proj", "k_proj", "v_proj", "o_proj", "up_proj", "gate_proj", "down_proj")
+    )
     parser.add_argument("--residual-report", type=Path)
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--baseline-quality", type=Path, required=True)
@@ -34,6 +37,8 @@ def main() -> None:
     started = time.monotonic()
     if not 0 <= args.through_layer < 35:
         raise ValueError("through-layer must be in [0, 35)")
+    if args.layer1_role is not None and args.through_layer != 1:
+        raise ValueError("layer1-role requires through-layer 1")
     detail_path = args.output.with_suffix(".quality.json")
     if args.output.exists() or detail_path.exists():
         raise FileExistsError(args.output)
@@ -122,6 +127,8 @@ def main() -> None:
             reconstructed = (codes.float().reshape(-1, 128) * scales.reshape(-1, 1)).reshape_as(weight)
             if not torch.equal(reconstructed.to(torch.bfloat16), weight):
                 raise ValueError(f"hard codes and scales do not reproduce saved weight: {name}")
+            if layer == 1 and args.layer1_role is not None and not name.endswith(f".{args.layer1_role}"):
+                continue
             weights[name] = weight
         block_reports.append({"layer": layer, "artifact_sha256": artifact_digest, "best": report["best"]})
 
@@ -255,6 +262,7 @@ def main() -> None:
         "rotation_manifest_sha256": manifest_sha256,
         "block_artifact_sha256": {str(row["layer"]): row["artifact_sha256"] for row in block_reports},
         "ternary_module_count": len(weights),
+        "layer1_role": args.layer1_role,
         "saved_snapshot": False,
         "lowrank_residual": residual_metadata,
     }
@@ -292,6 +300,7 @@ def main() -> None:
         "source": str(source),
         "through_layer": args.through_layer,
         "ternary_module_count": len(weights),
+        "layer1_role": args.layer1_role,
         "ternary_parameter_count": sum(weight.numel() for weight in weights.values()),
         "rotation_manifest_sha256": manifest_sha256,
         "block_reports": block_reports,

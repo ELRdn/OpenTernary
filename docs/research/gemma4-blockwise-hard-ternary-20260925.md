@@ -38,3 +38,23 @@ A separate pilot trained the rotated hard G128 codes of block 1 using straight-t
 Same-device smoke v1 throughput was measured after reload on the AMD Radeon RX 9070 XT, Python 3.12, torch 2.13.0+rocm10.0.0, transformers 5.17.0, BF16, seed 42, greedy generation, and five identical prompts. The BF16 source produced 160 tokens in 5052.95 ms (31.66 output token/s, peak allocated VRAM 10,297,021,952 bytes); the saved 205-target rotated fake-quant model produced 320 tokens in 26674.04 ms (12.00 output token/s, 10,318,714,368 bytes). Its responses ran to the 64-token cap on all five prompts because quality collapsed. These are observed end-to-end fake-quant throughput values with different output lengths, not a controlled packed-kernel speedup result. The 35-q-only saved rotated candidate measured 24.75 output token/s in the same environment, but its prior independent v5 instruction gate failed by 3.125 points; it is not an accepted alternative.
 
 The current bottleneck is model-level quality propagation through the first two blocks, despite lower local or held QA losses. Further full-205 training should be gated on a reproducible two-block candidate that passes the frozen validation protocol using only disjoint calibration examples. The benchmark thresholds and model target remain unchanged.
+
+## Calibration split correction and layer-1 attribution
+
+A subsequent audit found 17 shared Japanese passages between the original 64-row text/chat calibration and its appended QA examples; five crossed the calibration train/held boundary. The original QA held losses above are therefore diagnostic only and are not an independent generalization estimate. This does not change any frozen v4 quality result. The builders now reject shared Japanese base/QA passages. A larger calibration set, `data/calibration/gemma4-mixed-qa-large-train-20260925.json` (SHA-256 `b2e63dd3658baa1f96203e914895e6a8ca6f3508d68e7e03214590bb4ccaf1ad`), uses 384 train and 128 held rows from the pinned training sources. Its 512 rows have zero duplicate IDs, zero duplicate text bodies, and zero shared Japanese base/QA passages. It excludes quality v1–v5 texts and IDs as before.
+
+With a stronger BF16 teacher top-1 objective on the original small set, the best 14-target hard-code candidate changed 0.2629% of block-1 codes. It reached v4 English PPL 1349.319 and instruction 56.25%, but Japanese PPL 1978.175 failed the 2% limit. Doubling Japanese sample loss worsened v4 to English/Japanese PPL 1418.749/2093.574 and instruction 51.5625%. On the corrected 512-row set, shuffled training with 384 steps selected step 192 by held objective (0.270720→0.263302, 0.1272% code changes). Its saved/reloaded 14-target v4 result was 1451.061/1876.145 PPL, 54.6875% instruction, collapse 0/64: FAIL. Thus increased calibration size, top-1 emphasis, and a Japanese weight did not yield a two-block accepted candidate.
+
+To isolate block-1 sensitivity, each saved hard ternary projection was added separately to the accepted block-0 seven-target candidate. The full artifact was validated in every run, while only the named projection was applied; these are in-memory v4 screens, not independent test or CLI snapshots.
+
+| Additional block-1 projection | Total ternary targets | English PPL | Japanese PPL | Instruction | v4 gate |
+| --- | ---: | ---: | ---: | ---: | --- |
+| q_proj | 8 | 1431.138 | 1921.485 | 53.125% | FAIL |
+| k_proj | 8 | 1264.463 | 1655.046 | 54.6875% | FAIL |
+| v_proj | 8 | 1303.257 | 1611.850 | 56.25% | PASS |
+| o_proj | 8 | 1216.638 | 1588.342 | 53.125% | FAIL |
+| up_proj | 8 | 1262.344 | 1643.017 | 53.125% | FAIL |
+| gate_proj | 8 | 1467.827 | 1887.544 | 54.6875% | FAIL |
+| down_proj | 8 | 1412.438 | 1728.827 | 50.0% | FAIL |
+
+Only `v_proj` passed this validation gate as an isolated addition. It has not been materialized as a CLI snapshot or tested on an untouched split. Every other individual addition failed, so the full block-1 failure is not attributable solely to interactions among its seven projections. The experiment records are under `runs/gemma4-global-qa-hard-layer1-top1-*`, `runs/gemma4-global-qa-hard-layer1-large-*`, and `runs/gemma4-blockwise-role-screen-20260925/`.

@@ -24,13 +24,19 @@ def main() -> None:
     parser.add_argument("--base", type=Path, required=True)
     parser.add_argument("--quality", type=Path, action="append", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--samples-per-language", type=int, default=32)
     args = parser.parse_args()
+    if not 32 <= args.samples_per_language <= 256 or args.samples_per_language % 4:
+        raise ValueError("samples-per-language must be a multiple of four in [32, 256]")
     if args.output.exists():
         raise FileExistsError(args.output)
     base_bytes = args.base.read_bytes()
     base = json.loads(base_bytes)
     if base.get("schema_version") != 1 or base.get("status") != "calibration_only":
         raise ValueError("invalid base calibration set")
+    base_japanese = [row for split in ("train", "held") for row in base[split] if row["language"] == "ja"]
+    base_japanese_ids = {row["id"].removeprefix("jsquad-train-") for row in base_japanese}
+    base_japanese_texts = [normalized(row["text"]) for row in base_japanese]
     excluded_ids = set()
     excluded_contexts = set()
     quality_hashes = {}
@@ -70,6 +76,8 @@ def main() -> None:
                 or not 0 <= answer_start < 100
                 or answer_start + len(answer) > 145
                 or row_id in excluded_ids
+                or (language == "ja" and row_id in base_japanese_ids)
+                or (language == "ja" and any(context[:160] in text for text in base_japanese_texts))
                 or context in excluded_contexts
                 or context in seen_contexts
                 or len(context) < 150
@@ -98,9 +106,9 @@ def main() -> None:
                 }
             )
             selected += 1
-            if selected == 32:
+            if selected == args.samples_per_language:
                 break
-        if selected != 32:
+        if selected != args.samples_per_language:
             raise ValueError(f"insufficient disjoint {language} QA training rows")
     train, held = [], []
     for index, row in enumerate(qa_rows):
@@ -109,9 +117,15 @@ def main() -> None:
     held = [*base["held"], *held]
     if len({row["id"] for row in train + held}) != len(train + held):
         raise ValueError("duplicate calibration IDs")
+    qa_japanese = [row for row in train + held if row["kind"] == "qa" and row["language"] == "ja"]
+    for row in qa_japanese:
+        excerpt = normalized(row["text"].split("文章: ", 1)[1].split("\n質問:", 1)[0])
+        if any(excerpt in text for text in base_japanese_texts):
+            raise ValueError("QA excerpt overlaps base Japanese calibration")
     result = {
         "schema_version": 1,
         "status": "calibration_only",
+        "samples_per_language": args.samples_per_language,
         "base_sha256": hashlib.sha256(base_bytes).hexdigest(),
         "sources": {**base["sources"], "squad_train_revision": SQUAD_REVISION},
         "excluded_quality_sha256": quality_hashes,

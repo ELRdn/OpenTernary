@@ -23,7 +23,10 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--quality", type=Path, action="append", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--samples-per-language", type=int, default=32)
     args = parser.parse_args()
+    if not 32 <= args.samples_per_language <= 256 or args.samples_per_language % 4:
+        raise ValueError("samples-per-language must be a multiple of four in [32, 256]")
     if args.output.exists():
         raise FileExistsError(args.output)
     excluded_texts: set[str] = set()
@@ -42,11 +45,11 @@ def main() -> None:
                 excluded_texts.add(normalized(str(row["prompt"])))
 
     english = []
-    for index, value in enumerate(load_wikitext_texts(256, seed=20260925)):
+    for index, value in enumerate(load_wikitext_texts(8 * args.samples_per_language, seed=20260925)):
         text = normalized(value)
         if text and text not in excluded_texts and len(text) > 120:
             english.append({"id": f"wikitext-train-{index}", "text": value, "language": "en"})
-        if len(english) == 32:
+        if len(english) == args.samples_per_language:
             break
     path = hf_hub_download(
         "shunk031/JGLUE",
@@ -78,16 +81,16 @@ def main() -> None:
                 "language": "ja",
             }
         )
-        if len(japanese) == 32:
+        if len(japanese) == args.samples_per_language:
             break
-    if len(english) != 32 or len(japanese) != 32:
+    if len(english) != args.samples_per_language or len(japanese) != args.samples_per_language:
         raise ValueError("insufficient disjoint calibration sources")
 
     train = []
     held = []
     for language, rows in (("en", english), ("ja", japanese)):
         for index, row in enumerate(rows):
-            kind = "text" if index < 16 else "chat"
+            kind = "text" if index < args.samples_per_language // 2 else "chat"
             if language == "en":
                 text = row["text"]
                 if kind == "chat":
@@ -101,6 +104,7 @@ def main() -> None:
     payload = {
         "schema_version": 1,
         "status": "calibration_only",
+        "samples_per_language": args.samples_per_language,
         "sources": {"wikitext_revision": WIKITEXT_REVISION, "jglue_train_revision": JGLUE_REVISION},
         "excluded_quality_sha256": quality_hashes,
         "train": train,

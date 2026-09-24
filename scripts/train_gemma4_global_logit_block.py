@@ -6,6 +6,7 @@ import argparse
 import copy
 import hashlib
 import json
+import random
 import time
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,9 @@ def main() -> None:
     parser.add_argument("--train-hard-codes", action="store_true")
     parser.add_argument("--code-lr", type=float, default=0.005)
     parser.add_argument("--top-k", type=int, default=64)
+    parser.add_argument("--teacher-top1-weight", type=float, default=0.0)
+    parser.add_argument("--japanese-loss-weight", type=float, default=1.0)
+    parser.add_argument("--shuffle-train", action="store_true")
     parser.add_argument("--seq-len", type=int, default=128)
     parser.add_argument("--upstream-block-dir", type=Path)
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -46,6 +50,8 @@ def main() -> None:
         or args.lr <= 0
         or args.code_lr <= 0
         or args.top_k < 2
+        or args.teacher_top1_weight < 0
+        or args.japanese_loss_weight <= 0
         or args.seq_len < 8
     ):
         raise ValueError("invalid training arguments or output exists")
@@ -97,7 +103,9 @@ def main() -> None:
     teacher_data: dict[str, list[dict[str, Any]]] = {"train": [], "held": []}
     with torch.no_grad():
         for split in ("train", "held"):
-            for batch in batches[split]:
+            for batch, calibration_row in zip(batches[split], calibration[split], strict=True):
+                if calibration_row.get("language") not in {"en", "ja"}:
+                    raise ValueError("calibration language must be en or ja")
                 captured.clear()
                 inputs = {
                     "input_ids": batch["input_ids"].unsqueeze(0).to("cuda:0"),
@@ -121,10 +129,13 @@ def main() -> None:
                         "top_log_probs": top_log_probs.detach(),
                         "rest_prob": rest_prob.detach(),
                         "loss_mask": batch.get("loss_mask", batch["attention_mask"]).unsqueeze(0).to("cuda:0"),
+                        "language": calibration_row["language"],
                     }
                 )
     pre.remove()
     post.remove()
+    if args.shuffle_train:
+        random.Random(42).shuffle(teacher_data["train"])
     for parameter in model.parameters():
         parameter.requires_grad_(False)
     upstream_artifacts: dict[str, str] = {}
@@ -218,7 +229,14 @@ def main() -> None:
         rest_terms = example["rest_prob"] * (example["rest_prob"].log() - student_rest_log_prob)
         per_token = top_terms.sum(dim=-1) + rest_terms
         mask = example["loss_mask"]
-        return (per_token * mask).sum() / mask.sum()
+        kl = (per_token * mask).sum() / mask.sum()
+        if args.teacher_top1_weight:
+            teacher_top1_log_prob = student_top_log_probs[..., 0]
+            top1_ce = -(teacher_top1_log_prob * mask).sum() / mask.sum()
+            objective_value = kl + args.teacher_top1_weight * top1_ce
+        else:
+            objective_value = kl
+        return objective_value * (args.japanese_loss_weight if example["language"] == "ja" else 1.0)
 
     def evaluate(split: str) -> float:
         losses = []
@@ -231,6 +249,8 @@ def main() -> None:
         optimizer_groups.append({"params": [state["code_logits"] for state in states.values()], "lr": args.code_lr})
     optimizer = torch.optim.Adam(optimizer_groups)
     trainable = [parameter for group in optimizer_groups for parameter in group["params"]]
+    metric_label = "objective" if args.teacher_top1_weight else "kl"
+    held_key = f"held_{metric_label}"
 
     def code_change_ratio() -> float:
         if not args.train_hard_codes:
@@ -260,12 +280,12 @@ def main() -> None:
             with torch.no_grad():
                 row = {
                     "step": step,
-                    "train_kl": evaluate("train"),
-                    "held_kl": evaluate("held"),
+                    f"train_{metric_label}": evaluate("train"),
+                    held_key: evaluate("held"),
                     "hard_code_change_ratio": code_change_ratio(),
                 }
             history.append(row)
-            if best is None or row["held_kl"] < best["held_kl"]:
+            if best is None or row[held_key] < best[held_key]:
                 best = row
                 best_state = {
                     name: {
@@ -281,7 +301,7 @@ def main() -> None:
             states[name]["delta"].copy_(saved["delta"])
             if saved["code_logits"] is not None:
                 states[name]["code_logits"].copy_(saved["code_logits"])
-        if abs(evaluate("held") - best["held_kl"]) > 1e-7:
+        if abs(evaluate("held") - best[held_key]) > 1e-7:
             raise ValueError("best logit KD state did not replay")
     args.output_dir.mkdir(parents=True)
     payload = {}
@@ -330,6 +350,9 @@ def main() -> None:
         "held_samples": len(teacher_data["held"]),
         "steps": args.steps,
         "top_k": args.top_k,
+        "teacher_top1_weight": args.teacher_top1_weight,
+        "japanese_loss_weight": args.japanese_loss_weight,
+        "shuffle_train": args.shuffle_train,
         "train_hard_codes": args.train_hard_codes,
         "code_lr": args.code_lr if args.train_hard_codes else None,
         "seq_len": args.seq_len,
