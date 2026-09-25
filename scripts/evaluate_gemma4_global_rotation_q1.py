@@ -37,6 +37,7 @@ def main() -> None:
     parser.add_argument("--fixed-hadamard-additions", action="store_true")
     parser.add_argument("--fixed-hadamard-artifact-report", type=Path)
     parser.add_argument("--fixed-hadamard-artifact-reports", type=Path, nargs="+")
+    parser.add_argument("--allow-in-memory-fixed-additions", action="store_true")
     parser.add_argument("--fixed-hadamard-modules", nargs="+")
     parser.add_argument("--fixed-hadamard-block", type=int, default=1024)
     parser.add_argument("--fixed-hadamard-seed", type=int, default=42)
@@ -105,6 +106,10 @@ def main() -> None:
         raise ValueError("saved fixed Hadamard additions require --fixed-hadamard-additions")
     if args.fixed_hadamard_artifact_report is not None and args.fixed_hadamard_artifact_reports:
         raise ValueError("choose one fixed Hadamard artifact report option")
+    if args.allow_in_memory_fixed_additions and (
+        not args.fixed_hadamard_additions or not args.fixed_hadamard_artifact_reports
+    ):
+        raise ValueError("mixed saved and in-memory additions require multiple fixed artifact reports")
     if args.fixed_hadamard_modules and (not args.fixed_hadamard_additions or args.additional_roles):
         raise ValueError("explicit fixed Hadamard modules require additions without role filters")
     if args.fixed_hadamard_block not in (128, 256, 512, 1024):
@@ -171,8 +176,10 @@ def main() -> None:
                 fixed_artifacts[item] = fixed_artifact
                 fixed_artifact_shas[item] = artifact_sha
         if report_paths:
-            if set(fixed_artifacts) != additional_names:
+            if set(fixed_artifacts) != additional_names and not args.allow_in_memory_fixed_additions:
                 raise ValueError("fixed Hadamard artifacts do not cover all selected modules")
+            if args.allow_in_memory_fixed_additions and set(fixed_artifacts) == additional_names:
+                raise ValueError("mixed addition mode requires at least one in-memory module")
             if len(report_paths) == 1:
                 additional_sha = next(iter(fixed_artifact_shas.values()))
     if args.additional_block_report is not None:
@@ -463,6 +470,7 @@ def main() -> None:
             "artifact_sha256": [layer0_sha, candidate_sha, additional_sha],
             "additional_artifact_sha256_by_module": fixed_artifact_shas,
             "additional_modules": sorted(additional_names),
+            "in_memory_fixed_modules": sorted(additional_names - fixed_artifacts.keys()),
             "deterministic_algorithms": args.diagnose_deterministic_algorithms,
             "layer_hashes_enabled": args.diagnose_layer_hashes,
             "synchronize_layers": args.diagnose_sync_layers,
@@ -513,7 +521,9 @@ def main() -> None:
     gate = compare_quality_metrics(baseline["summary"], quality["summary"])
     result = {
         "status": (
-            "saved_fixed_hadamard_hard_ternary_quality_only"
+            "saved_plus_in_memory_fixed_hadamard_quality_only"
+            if fixed_artifacts and set(fixed_artifacts) != additional_names
+            else "saved_fixed_hadamard_hard_ternary_quality_only"
             if fixed_artifacts
             else "saved_eight_plus_in_memory_fixed_hadamard_quality_only"
             if args.fixed_hadamard_additions
@@ -526,6 +536,7 @@ def main() -> None:
         "additional_artifact_sha256": additional_sha,
         "additional_artifact_sha256_by_module": fixed_artifact_shas,
         "additional_modules": sorted(additional_names),
+        "in_memory_fixed_modules": sorted(additional_names - fixed_artifacts.keys()),
         "ternary_module_count": len(layer0_names) + 1 + len(additional_names),
         "additional_roles": sorted(item.rsplit(".", 1)[-1] for item in additional_names),
         "fixed_hadamard_additions": args.fixed_hadamard_additions,

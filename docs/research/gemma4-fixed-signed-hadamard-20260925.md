@@ -105,3 +105,25 @@ The passing `up_proj` was saved as hard G128 codes, scales, and BF16 reconstruct
 | v5 test | Saved 11-target G128 | 1263.181 | 1123.315 | 57.8125% | 0/64 | PASS |
 
 Two independent v4 reload evaluations produced identical summary values. The v4 and v5 composite scores were 0.100429 and 0.072480. Matching source identity, data and protocol fingerprints, and eager attention were checked against the BF16 controls. Saved reports: `runs/gemma4-eleven-h1024-layer2-up-saved-eager-v4-20260925.json`, its `-repeat-` counterpart, and `runs/gemma4-eleven-h1024-layer2-up-saved-eager-v5-20260925.json`. The in-memory screen and saved reload had slightly different metrics; the layer-2 saved codes and BF16 weights reproduced exactly across five GPU conversions, while identical behavior for the entire in-memory combination was not proven. The 11-target result is still partial: 194 canonical targets remain, no single all-205 accepted snapshot exists, and v4/v5 cannot serve as an unopened final test.
+
+## Layer-2 twelve-target follow-up
+
+The saved 11-target base was kept fixed while each remaining layer-2 projection was added in memory with signed H1024/G128. The evaluator now requires an explicit mixed-artifact flag to combine hash-checked saved modules with one in-memory candidate; by default, saved reports must cover every selected fixed-Hadamard module. Each row below is a separate eager-attention v4 run against the matched BF16 control.
+
+| Single addition to saved 11-target base | English PPL | Japanese PPL | Instruction | Gate |
+| --- | ---: | ---: | ---: | --- |
+| `self_attn.v_proj` | 1206.955 | 1456.405 | 54.6875% | FAIL, instruction |
+| `self_attn.o_proj` | 1124.721 | 1400.194 | 56.2500% | PASS |
+| `mlp.gate_proj` | 1401.988 | 1716.692 | 50.0000% | FAIL, instruction |
+| `mlp.down_proj` | 1310.782 | 1566.042 | 54.6875% | FAIL, instruction |
+
+The passing layer-2 `o_proj` was saved as hard G128 codes/scales and BF16 reconstructed weights in `runs/gemma4-fixed-h1024-layer2-o-hard-gpu-20260925.safetensors` (SHA-256 `06c7d9b90556d53043001893d5738a360b1651bd1fcc8bbc7d850cbd46ba4af8`). The layer-0 block, layer-1 `q_proj`, layer-1 `k_proj`/`up_proj`, layer-2 `up_proj`, and layer-2 `o_proj` were then independently reloaded and checked together.
+
+| Eager attention split | Model | English PPL | Japanese PPL | Instruction | Collapse | Gate |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| v4 validation | BF16 | 1351.609 | 1722.587 | 57.8125% | 0/64 | reference |
+| v4 validation | Saved 12-target G128 | 1124.721 | 1400.194 | 56.2500% | 0/64 | PASS |
+| v5 test | BF16 | 1272.395 | 1427.770 | 59.3750% | 0/64 | reference |
+| v5 test | Saved 12-target G128 | 1194.031 | 1120.629 | 57.8125% | 0/64 | PASS |
+
+Composite scores were 0.119570 on v4 and 0.092160 on v5. The saved v4 result matched its in-memory screen exactly at the summary level. Independent saved reloads repeated both v4 and v5 with identical summary values and PASS gates. The reports are `runs/gemma4-twelve-h1024-layer2-o-saved-eager-v{4,5}-20260925.json` and their `-repeat-` counterparts. This remains **12 of 205** canonical targets, with 193 unconverted targets and no unopened final test; a native packed runtime and whole-model quality acceptance are still outstanding.

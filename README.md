@@ -23,6 +23,8 @@ Product planning: [CLI Product Roadmap](CLI_ROADMAP.md) covers CLI reliability, 
 
 **Eleven-target follow-up (2026-09-25):** Adding signed H1024 layer-2 `up_proj` and reloading its hard-G128 artifact passed eager-attention matched BF16 gates on v4 and v5. The other screened layer-2 `q_proj`/`k_proj` additions failed the v4 instruction gate. This remains an 11/205-target pilot; see the [research record](docs/research/gemma4-fixed-signed-hadamard-20260925.md).
 
+**Twelve-target follow-up (2026-09-25):** A saved layer-2 `o_proj` addition passed the same eager-attention BF16 gates on v4 and v5, with identical summary values on independent reloads of both splits. The three other remaining layer-2 projections failed individual v4 screens. The all-205 target remains open; see the [research record](docs/research/gemma4-fixed-signed-hadamard-20260925.md).
+
 ---
 
 ## Quickstart (core CLI)
