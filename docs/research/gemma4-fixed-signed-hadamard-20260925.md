@@ -290,3 +290,30 @@ These four weights were materialized on RX 9070 XT to hard G128 codes, FP32 scal
 | v5 test, later reloads (2) | Saved 28-target G128 | 1138.880 | 1147.549 | 59.3750% | 0/64 | PASS |
 
 The v4 saved reload and repeat reproduced the same summary and all 64 response hashes. The first v5 run differed from both later v5 runs on two of 64 response hashes; the latter two reproduced each other. All three passed the fixed gate, but process-level numerical variation remains. Reports are `runs/gemma4-twentyeight-h1024-layer6-q-k-v-up-saved-eager-v{4,5}-20260925.json`, the v4/v5 `-repeat` reports, and the v5 `-repeat2` report. This covers **28/205** canonical projections, leaving 177 in BF16. Both splits were used during development, so an unopened final test is required. The research runtime reconstructs BF16 weights and applies FP32 rotation in Python hooks; it does not establish packed ternary speed or memory efficiency.
+
+## Layer-7 screening and rejected 31-target pilots
+
+The saved 28-target candidate was held fixed. Adding all seven layer-7 signed H1024/G128 projections in memory failed eager-attention v4 solely on instruction accuracy: English/Japanese PPL 1249.919/1542.401, instruction 40.625%, zero collapse (`runs/gemma4-thirtyfive-h1024-layer7-all-eager-v4-20260925.json`). Individual additions against the same eager BF16 v4 control were:
+
+| Single layer-7 addition | English PPL | Japanese PPL | Instruction | v4 gate |
+| --- | ---: | ---: | ---: | --- |
+| `q_proj` | 1255.330 | 1371.167 | 60.9375% | PASS |
+| `k_proj` | 1209.828 | 1385.793 | 64.0625% | PASS |
+| `v_proj` | 1362.665 | 1547.358 | 57.8125% | PASS |
+| `o_proj` | 1192.268 | 1338.560 | 54.6875% | FAIL, instruction |
+| `gate_proj` | 1428.328 | 1533.998 | 57.8125% | FAIL, English PPL |
+| `up_proj` | 1087.464 | 1252.223 | 59.3750% | PASS |
+| `down_proj` | 1108.279 | 1274.679 | 50.0000% | FAIL, instruction |
+
+All seven had zero collapse; reports are `runs/gemma4-twentynine-h1024-layer7-<role>-eager-v4-20260925.json`. Combining the four individually passing roles (`q_proj`, `k_proj`, `v_proj`, `up_proj`) failed v4 instruction quality at 54.6875%, despite English/Japanese PPL 1161.301/1380.916 and zero collapse (`runs/gemma4-thirtytwo-h1024-layer7-q-k-v-up-eager-v4-20260925.json`). Leaving out one role at a time gave:
+
+| Omitted role | English PPL | Japanese PPL | Instruction | v4 gate |
+| --- | ---: | ---: | ---: | --- |
+| `v_proj` | 1104.175 | 1293.963 | 60.9375% | PASS |
+| `q_proj` | 1145.392 | 1386.485 | 54.6875% | FAIL, instruction |
+| `k_proj` | 1162.646 | 1364.503 | 54.6875% | FAIL, instruction |
+| `up_proj` | 1362.303 | 1572.688 | 56.2500% | PASS |
+
+These in-memory reports are `runs/gemma4-thirtyone-h1024-layer7-omit-<role>-eager-v4-20260925.json`. The `v_proj`-omitted `q_proj`/`k_proj`/`up_proj` triple had the stronger v4 margins. It was materialized on RX 9070 XT as hard G128 codes, FP32 scales, and reconstructed BF16 weights in `runs/gemma4-fixed-h1024-layer7-q-k-up-hard-gpu-20260925.safetensors` (SHA-256 `6657201bc11943a703599adce1db9aeb9585208413b2edee74580fa745f852b6`). Independent processes reloaded it with the prior saved artifacts and checked provenance, hashes, and G128 reconstruction. Saved v4 passed with English/Japanese PPL 1110.286/1292.278, instruction 60.9375%, zero collapse. Two independent saved v5 reloads reproduced English/Japanese PPL 1063.673/1061.034 and instruction 56.25%, zero collapse: both **failed** the fixed instruction gate against BF16 59.375% (the allowed regression is 2 points). Reports are `runs/gemma4-thirtyone-h1024-layer7-q-k-up-saved-eager-v{4,5}-20260925.json` and the v5 `-repeat` report. This 31-target artifact is rejected despite better PPL.
+
+The other v4-passing triple, `q_proj`/`k_proj`/`v_proj`, was screened in memory on v5. Its English/Japanese PPL was 1350.157/1329.285 with instruction 59.375% and zero collapse. English PPL regressed 6.11% versus matched BF16 1272.395, above the fixed 2% limit, so this candidate also **failed** (`runs/gemma4-thirtyone-h1024-layer7-q-k-v-eager-v5-20260925.json`). Since v5 was used to choose and reject candidates, it is development data for this research line. No layer-7 combination in this round has passed both v4 and v5 after save/reload. The best passing saved pilot remains **28/205**, with 177 canonical projections in BF16. A new unopened test and native packed runtime are still required for full acceptance.

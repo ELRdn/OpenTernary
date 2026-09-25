@@ -37,6 +37,8 @@ Product planning: [CLI Product Roadmap](CLI_ROADMAP.md) covers CLI reliability, 
 
 **Twenty-eight-target follow-up (2026-09-25):** Adding all seven layer-6 projections to the saved 24-target base failed v4 PPL and instruction gates. The individually passing `q_proj`, `k_proj`, `v_proj`, and `up_proj` combination passed matched eager-attention BF16 gates on v4 and v5 after GPU materialization and independent reload. All three saved v5 runs passed, though two instruction responses differed between the first and subsequent runs. This remains 28/205 canonical projections, with 177 in BF16; v4/v5 have been opened, so an untouched final test and a native packed runtime remain outstanding. See the [research record](docs/research/gemma4-fixed-signed-hadamard-20260925.md).
 
+**Layer-7 follow-up (2026-09-25):** The seven-projection addition to the saved 28-target base failed v4 instruction quality. Four individual additions passed v4, but all four together failed. A saved/reloaded `q_proj`/`k_proj`/`up_proj` 31-target candidate passed v4 and failed v5 twice on instruction quality. The other v4-passing triple, `q_proj`/`k_proj`/`v_proj`, failed a v5 in-memory screen on English PPL. The strongest saved candidate remains 28/205; see the [research record](docs/research/gemma4-fixed-signed-hadamard-20260925.md).
+
 ---
 
 ## Quickstart (core CLI)
