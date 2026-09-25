@@ -1,6 +1,6 @@
 # OpenTernary
 
-> Historical design copy. The maintained project overview is [../README.md](../README.md), the current CLI guide is [CLI.md](CLI.md), and implementation evidence is [CLI_IMPLEMENTATION_STATUS.md](CLI_IMPLEMENTATION_STATUS.md). Examples and status below may predate the current CLI.
+> Historical design copy. Start with the [Japanese current-state guide](OPEN_TERNARY_GUIDE.ja.md). The maintained project overview is [../README.md](../README.md), the current CLI guide is [CLI.md](CLI.md), and implementation evidence is [CLI_IMPLEMENTATION_STATUS.md](CLI_IMPLEMENTATION_STATUS.md). Examples and status below may predate the current CLI.
 
 > Open-source tooling for researching, calibrating, benchmarking, and eventually deploying ternary LLMs.
 
