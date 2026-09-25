@@ -15,14 +15,8 @@ from openternary.benchmark.acceptance import compare_quality_metrics
 from openternary.benchmark.quality_runner import run_quality_benchmark
 from openternary.config.loader import load_config
 from openternary.quant.grouping import dequantize_groupwise, quantize_groupwise, refine_groupwise_least_squares
-from openternary.quant.rotation import hadamard_segments, signed_hadamard_last_dim
+from openternary.quant.rotation import fixed_signs_for_module, hadamard_segments, signed_hadamard_last_dim
 from openternary.services.identity import snapshot_identity
-
-
-def signs_for_module(name: str, dimension: int, seed: int, device: torch.device) -> torch.Tensor:
-    digest = hashlib.sha256(f"{seed}:{name}".encode()).digest()
-    generator = torch.Generator(device="cpu").manual_seed(int.from_bytes(digest[:8], "little"))
-    return (torch.randint(0, 2, (dimension,), generator=generator, dtype=torch.int8) * 2 - 1).to(device)
 
 
 def main() -> None:
@@ -80,7 +74,7 @@ def main() -> None:
                 signs = (
                     torch.ones(dim, dtype=torch.int8, device=param.device)
                     if args.unsigned
-                    else signs_for_module(name, dim, args.seed, param.device)
+                    else fixed_signs_for_module(name, dim, args.seed, param.device)
                 )
                 rotated = signed_hadamard_last_dim(original, args.max_block, signs)
                 probe = torch.randn(2, dim, device=param.device)

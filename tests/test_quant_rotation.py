@@ -11,6 +11,7 @@ from openternary.adapters.runtime import _install_rotations
 from openternary.quant.rotation import (
     apply_block_rotation,
     cayley_orthogonal,
+    fixed_signs_for_module,
     hadamard_last_dim,
     hadamard_segments,
     signed_hadamard_last_dim,
@@ -62,6 +63,15 @@ def test_signed_hadamard_preserves_linear_function_with_1536_input() -> None:
 def test_signed_hadamard_rejects_invalid_signs() -> None:
     with pytest.raises(ValueError, match="signs"):
         signed_hadamard_last_dim(torch.ones(2, 128), 128, torch.zeros(128))
+
+
+def test_fixed_module_signs_are_reproducible_and_module_specific() -> None:
+    first = fixed_signs_for_module("layer.0.q_proj", 128, 42, torch.device("cpu"))
+    again = fixed_signs_for_module("layer.0.q_proj", 128, 42, torch.device("cpu"))
+    other = fixed_signs_for_module("layer.0.k_proj", 128, 42, torch.device("cpu"))
+    assert torch.equal(first, again)
+    assert not torch.equal(first, other)
+    assert set(first.tolist()) == {-1, 1}
 
 
 def test_cayley_rejects_nonskew_matrix() -> None:

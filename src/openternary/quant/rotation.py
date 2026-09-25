@@ -41,6 +41,15 @@ def hadamard_segments(dimension: int, max_block_size: int) -> tuple[int, ...]:
     return tuple(sizes)
 
 
+def fixed_signs_for_module(name: str, dimension: int, seed: int, device: torch.device) -> torch.Tensor:
+    """Derive a reproducible sign vector without sharing RNG state across modules."""
+    if not name or dimension < 2:
+        raise ValueError("module name and feature dimension are required")
+    digest = hashlib.sha256(f"{seed}:{name}".encode()).digest()
+    generator = torch.Generator(device="cpu").manual_seed(int.from_bytes(digest[:8], "little"))
+    return (torch.randint(0, 2, (dimension,), generator=generator, dtype=torch.int8) * 2 - 1).to(device)
+
+
 def signed_hadamard_last_dim(x: torch.Tensor, max_block_size: int, signs: torch.Tensor) -> torch.Tensor:
     """Apply one fixed signed, normalized Hadamard map per feature segment."""
     if signs.ndim != 1 or signs.numel() != x.shape[-1] or not torch.all((signs == 1) | (signs == -1)):

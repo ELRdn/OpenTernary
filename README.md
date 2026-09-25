@@ -17,6 +17,8 @@ Product planning: [CLI Product Roadmap](CLI_ROADMAP.md) covers CLI reliability, 
 
 **Fixed Hadamard follow-up (2026-09-25):** Signed H128/H256/H512/H1024 G128 post-training conversion improved the first 14 targets over no rotation in some cases, but none passed the frozen v4 quality gate. Applying signed H1024 to all 205 targets yielded English/Japanese PPL 7261.13/22939.74 and 0% instruction exact match against BF16 1355.44/1725.48 and 57.8125%. The all-target result is an in-memory screen; no accepted saved/reloaded 205-target candidate exists. Details: [fixed signed Hadamard research record](docs/research/gemma4-fixed-signed-hadamard-20260925.md).
 
+**Mixed-geometry follow-up (2026-09-25):** Adding signed H1024 `k_proj` and `up_proj` to the saved eight-target base reached 10 hard-G128 targets. The extra tensors were saved and reloaded, but repeated identical-artifact v4 runs split 2 PASS / 1 FAIL on the instruction gate. This is a fragile pilot, not a stable quality result or 205-target acceptance; see the same research record.
+
 ---
 
 ## Quickstart (core CLI)
