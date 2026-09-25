@@ -19,6 +19,8 @@ Product planning: [CLI Product Roadmap](CLI_ROADMAP.md) covers CLI reliability, 
 
 **Mixed-geometry follow-up (2026-09-25):** Adding signed H1024 `k_proj` and `up_proj` to the saved eight-target base reached 10 hard-G128 targets. The extra tensors were saved and reloaded, but repeated identical-artifact v4 runs split 2 PASS / 1 FAIL on the instruction gate. This is a fragile pilot, not a stable quality result or 205-target acceptance; see the same research record.
 
+**Eager-attention follow-up (2026-09-25):** The same saved 10-target artifact combination passed matched BF16 comparisons on v4 validation and v5 test with eager text attention on RX 9070 XT. This partial pilot does not change the failed all-205 result; v4/v5 have already been opened, and a new final test is still required. See the [research record](docs/research/gemma4-fixed-signed-hadamard-20260925.md).
+
 ---
 
 ## Quickstart (core CLI)

@@ -48,9 +48,13 @@ def main() -> None:
     parser.add_argument("--diagnose-deterministic-algorithms", action="store_true")
     parser.add_argument("--diagnose-layer-hashes", action="store_true")
     parser.add_argument("--diagnose-sync-layers", action="store_true")
+    parser.add_argument("--diagnose-eager-attention", action="store_true")
     args = parser.parse_args()
     if args.diagnose_case_id is None and (
-        args.diagnose_quality_first or args.diagnose_layer_hashes or args.diagnose_sync_layers
+        args.diagnose_quality_first
+        or args.diagnose_layer_hashes
+        or args.diagnose_sync_layers
+        or args.diagnose_eager_attention
     ):
         raise ValueError("diagnostic options require --diagnose-case-id")
     if args.diagnose_deterministic_algorithms:
@@ -181,6 +185,14 @@ def main() -> None:
     )
     processor = load_processor(cfg, source)
     model = load_model(cfg, source, torch.bfloat16, {"": "cuda:0"}).eval()
+    if args.diagnose_eager_attention:
+        model.get_submodule("model.language_model").config._attn_implementation = "eager"
+        active_attention = {
+            model.get_submodule(f"model.language_model.layers.{index}.self_attn").config._attn_implementation
+            for index in range(35)
+        }
+        if active_attention != {"eager"}:
+            raise ValueError(f"eager attention did not reach all text layers: {active_attention}")
     parameters = dict(model.named_parameters())
     handles = []
     with torch.no_grad():
@@ -277,6 +289,9 @@ def main() -> None:
             )
             preceding_quality = {
                 "summary": measured["summary"],
+                "protocol_fingerprint": measured["protocol_fingerprint"],
+                "dataset_fingerprint": measured["dataset_fingerprint"],
+                "source_identity": snapshot_identity(source),
                 "case_response": next(
                     item["response_text"]
                     for item in measured["instructions"]["results"]
@@ -415,6 +430,7 @@ def main() -> None:
             "deterministic_algorithms": args.diagnose_deterministic_algorithms,
             "layer_hashes_enabled": args.diagnose_layer_hashes,
             "synchronize_layers": args.diagnose_sync_layers,
+            "eager_attention": args.diagnose_eager_attention,
             "preceding_quality": preceding_quality,
             "trials": [
                 {
