@@ -154,3 +154,30 @@ The more robust single addition, layer-3 `down_proj`, was materialized on the sa
 | v5 test | Saved 13-target G128 | 1244.554 | 1103.924 | 60.9375% | 0/64 | PASS |
 
 The saved reports are `runs/gemma4-thirteen-h1024-layer3-down-saved-eager-v{4,5}-20260925.json`. A second independent v5 reload also passed but produced different summary values: English/Japanese PPL 1247.198/1093.612, instruction 59.375%, zero collapse. Two of 64 generated answers differed from the first v5 run; one changed from exact match to nonmatch. A third independent v5 reload reproduced the first run's summary exactly and passed. The BF16 eager v5 control repeated with exactly the same summary, all 64 answer hashes, dataset fingerprint, and protocol fingerprint (`runs/gemma4-bf16-eager-v5-repeat-research-20260925.json`). Thus the candidate retains process-level numerical variation even with eager attention in this sample. Three PASS results support the partial pilot, but do not establish deterministic inference. The candidate repeat reports are `runs/gemma4-thirteen-h1024-layer3-down-saved-eager-v5-repeat*-20260925.json`. These results cover **13/205** canonical projections; 192 remain BF16. Both v4 and v5 were opened during research, so a newly separated final test is still required. This research runtime dequantizes the hard weights to BF16 and applies FP32 Hadamard transforms in Python hooks; it does not measure a packed ternary kernel or establish model-wide compression/speed gains.
+
+## Layer-4 incremental expansion
+
+The saved 13-target base was held fixed. Each of layer 4's seven canonical projections was added separately in memory with signed H1024 and G128 AbsMean under eager attention on v4 validation. The matched BF16 control was English/Japanese PPL 1351.609/1722.587, instruction 57.8125%, and zero collapse.
+
+| Single layer-4 addition | English PPL | Japanese PPL | Instruction | v4 gate |
+| --- | ---: | ---: | ---: | --- |
+| `q_proj` | 1099.956 | 1235.972 | 57.8125% | PASS |
+| `k_proj` | 1002.635 | 1118.510 | 57.8125% | PASS |
+| `v_proj` | 1131.917 | 1361.262 | 51.5625% | FAIL, instruction |
+| `o_proj` | 1143.973 | 1221.752 | 57.8125% | PASS |
+| `gate_proj` | 1523.222 | 1592.849 | 54.6875% | FAIL |
+| `up_proj` | 1162.137 | 1374.332 | 57.8125% | PASS |
+| `down_proj` | 1260.883 | 1414.044 | 54.6875% | FAIL, instruction |
+
+All seven had zero collapse. The reports are `runs/gemma4-fourteen-h1024-layer4-<role>-eager-v4-20260925.json`. The four passing roles (`q_proj`, `k_proj`, `o_proj`, `up_proj`) were then combined in memory. That 17-target candidate passed v4 with English/Japanese PPL 869.151/1016.218, instruction 64.0625%, and zero collapse. The joint in-memory report is `runs/gemma4-seventeen-h1024-layer4-q-k-o-up-eager-v4-20260925.json`.
+
+The four layer-4 projections were materialized on RX 9070 XT to hard G128 codes, FP32 scales, and reconstructed BF16 weights. The saved artifact `runs/gemma4-fixed-h1024-layer4-q-k-o-up-hard-gpu-20260925.safetensors` has SHA-256 `63d30a5bed59e476a3533ab09ed0d40b1e57a8f3c33d8adfe334759301eb775a`. Independent processes reloaded the existing artifacts plus this one, checked their hashes and G128 reconstruction, and used eager text attention. The saved v4 result matched the in-memory screen exactly. The v5 test run and its independent repeat had identical summaries and all 64 instruction answer hashes, with matching data/protocol fingerprints:
+
+| Eager attention split | Model | English PPL | Japanese PPL | Instruction | Collapse | Gate |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| v4 validation | BF16 | 1351.609 | 1722.587 | 57.8125% | 0/64 | reference |
+| v4 validation | Saved 17-target G128 | 869.151 | 1016.218 | 64.0625% | 0/64 | PASS |
+| v5 test | BF16 | 1272.395 | 1427.770 | 59.3750% | 0/64 | reference |
+| v5 test | Saved 17-target G128 | 801.856 | 862.771 | 62.5000% | 0/64 | PASS |
+
+The saved reports are `runs/gemma4-seventeen-h1024-layer4-q-k-o-up-saved-eager-v{4,5}-20260925.json` and the `v5-repeat` report. This is a **17/205** canonical-projection pilot, with 188 still BF16. The earlier 13-target run showed process-level variation, so two identical 17-target v5 runs do not establish general determinism. v4/v5 have both been used during development; an unopened final test is required for acceptance. The Python-hook runtime dequantizes weights to BF16, so its timing and memory do not demonstrate packed ternary efficiency.

@@ -27,6 +27,8 @@ Product planning: [CLI Product Roadmap](CLI_ROADMAP.md) covers CLI reliability, 
 
 **Thirteen-target follow-up (2026-09-25):** A saved layer-3 `down_proj` addition passed matched eager-attention BF16 gates on v4 and v5 after reload. Combining it with the individually passing layer-3 `o_proj` failed the English-PPL gate. This remains a partial 13/205-target result; the other 192 canonical projections, a new unopened final test, and a native packed runtime remain open. See the [research record](docs/research/gemma4-fixed-signed-hadamard-20260925.md).
 
+**Seventeen-target follow-up (2026-09-25):** Four fixed signed H1024 layer-4 projections (`q_proj`, `k_proj`, `o_proj`, `up_proj`) were added to the saved 13-target base. The combined hard-G128 candidate passed matched BF16 v4 and v5 quality gates after save/reload; an independent v5 repeat reproduced all summary values and instruction responses. This remains 17/205 canonical projections, with 188 in BF16 and no unopened final test or native packed runtime. See the [research record](docs/research/gemma4-fixed-signed-hadamard-20260925.md).
+
 ---
 
 ## Quickstart (core CLI)
