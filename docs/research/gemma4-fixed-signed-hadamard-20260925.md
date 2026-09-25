@@ -196,3 +196,40 @@ Layer-3 `o_proj` was saved on RX 9070 XT as hard G128 codes, FP32 scales, and re
 | v5 test | Saved 18-target G128 | 1020.237 | 983.749 | 60.9375% | 0/64 | PASS |
 
 The saved v4 result differed slightly from its in-memory screen, although both passed. An independent saved v5 reload reproduced the summary and all 64 instruction answer hashes exactly, with matching data/protocol fingerprints. The reports are `runs/gemma4-eighteen-h1024-layer3-o-saved-eager-v{4,5}-20260925.json` and `runs/gemma4-eighteen-h1024-layer3-o-saved-eager-v5-repeat-20260925.json`. This remains a **18/205** partial pilot with 187 canonical projections in BF16; v4/v5 are already opened, and native packed ternary performance has not been measured.
+
+## Layer-1 recovery on the 18-target base
+
+The saved 18-target candidate was held fixed while the four still-BF16 layer-1 projections were each added separately with signed H1024/G128 on eager-attention v4 validation. Each individual addition passed the matched BF16 gate:
+
+| Single layer-1 addition | English PPL | Japanese PPL | Instruction | v4 gate |
+| --- | ---: | ---: | ---: | --- |
+| `v_proj` | 1014.903 | 1229.582 | 56.2500% | PASS |
+| `o_proj` | 969.235 | 1151.894 | 60.9375% | PASS |
+| `gate_proj` | 1200.070 | 1330.863 | 57.8125% | PASS |
+| `down_proj` | 1036.800 | 1143.958 | 59.3750% | PASS |
+
+The reports are `runs/gemma4-nineteen-h1024-layer1-<role>-retry-eager-v4-20260925.json`. Combining all four gave a 22-target v4 candidate with English/Japanese PPL 1193.074/1474.450, instruction 54.6875%, zero collapse: **FAIL** on the fixed instruction gate (`runs/gemma4-twentytwo-h1024-layer1-v-o-gate-down-eager-v4-20260925.json`). Individual passes again did not compose.
+
+Leaving out one role at a time yielded these 21-target v4 screens:
+
+| Omitted layer-1 role | English PPL | Japanese PPL | Instruction | Gate |
+| --- | ---: | ---: | ---: | --- |
+| `v_proj` | 1161.807 | 1391.770 | 59.3750% | PASS |
+| `o_proj` | 1182.608 | 1431.763 | 57.8125% | PASS |
+| `gate_proj` | 1058.207 | 1303.316 | 54.6875% | FAIL, instruction |
+| `down_proj` | 1186.757 | 1367.050 | 56.2500% | PASS |
+
+The `v_proj`-omitted triple had the highest accepted v4 composite score (0.121053). Its layer-1 `o_proj`/`gate_proj`/`down_proj` weights were GPU-materialized (SHA-256 `c54e88b14f99977222b82e36a784fe7407d19f64224b9e91d48d6459a0f214e3`). Saved/reloaded v4 exactly reproduced the in-memory summary, but two independent saved v5 runs both failed the instruction gate at 56.25% versus BF16 59.375%. This artifact is **rejected**; reports are `runs/gemma4-twentyone-h1024-layer1-o-gate-down-saved-eager-v{4,5}-20260925.json` and the v5 repeat. Two other v4-passing triples were screened in memory on v5: omitting `o_proj` also failed (instruction 56.25%), while omitting `down_proj` passed (instruction 59.375%). These v5 results were used for development selection; v5 cannot be considered an unopened test for the selected candidate.
+
+The `down_proj`-omitted layer-1 `v_proj`/`o_proj`/`gate_proj` triple was GPU-materialized as hard G128 codes, FP32 scales, and reconstructed BF16 weights in `runs/gemma4-fixed-h1024-layer1-v-o-gate-hard-gpu-20260925.safetensors` (SHA-256 `9c1794c08b52e6ff7f58016f3bd55e269b3c50453f8d325ccd44cd73bb4201c5`). Separate processes reloaded it with the earlier disjoint artifacts and verified source/manifest identity, hashes, G128 reconstruction, and eager text attention:
+
+| Eager attention split | Model | English PPL | Japanese PPL | Instruction | Collapse | Gate |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| v4 validation | BF16 | 1351.609 | 1722.587 | 57.8125% | 0/64 | reference |
+| v4 validation | Saved 21-target G128 | 1186.944 | 1366.631 | 56.2500% | 0/64 | PASS |
+| v5 test | BF16 | 1272.395 | 1427.770 | 59.3750% | 0/64 | reference |
+| v5 test | Saved 21-target G128 | 1119.693 | 1159.007 | 59.3750% | 0/64 | PASS |
+
+Independent reloads passed both splits. The v4 repeat had English/Japanese PPL 1186.757/1367.050 and the same instruction score; two of 64 response hashes differed. The v5 repeat reproduced the summary and all 64 response hashes exactly. Reports are `runs/gemma4-twentyone-h1024-layer1-v-o-gate-saved-eager-v{4,5}-20260925.json` and their `-repeat` counterparts. This is a **21/205** partial pilot with 184 canonical projections still BF16, residual process-level variation on v4, and no unopened final test.
+
+The v5 quality runner measured 18-target inference at 91.032 and 93.101 seconds, while two BF16 eager controls measured 82.703 and 52.834 seconds on the same RX 9070 XT. The BF16 timing spread is too large for a stable speed ratio from these samples. The research runtime keeps reconstructed BF16 weights and Python FP32 rotation hooks, so these timings and memory figures do not estimate native packed ternary throughput. A controlled repeated speed comparison remains open.
