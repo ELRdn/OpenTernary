@@ -181,3 +181,18 @@ The four layer-4 projections were materialized on RX 9070 XT to hard G128 codes,
 | v5 test | Saved 17-target G128 | 801.856 | 862.771 | 62.5000% | 0/64 | PASS |
 
 The saved reports are `runs/gemma4-seventeen-h1024-layer4-q-k-o-up-saved-eager-v{4,5}-20260925.json` and the `v5-repeat` report. This is a **17/205** canonical-projection pilot, with 188 still BF16. The earlier 13-target run showed process-level variation, so two identical 17-target v5 runs do not establish general determinism. v4/v5 have both been used during development; an unopened final test is required for acceptance. The Python-hook runtime dequantizes weights to BF16, so its timing and memory do not demonstrate packed ternary efficiency.
+
+## Layer-3 `o_proj` recovery on the 17-target base
+
+Adding signed H1024/G128 layer-3 `o_proj` together with layer-3 `down_proj` had failed the v4 English-PPL gate on the 12-target base (14 targets). The same `o_proj` was retried on the saved 17-target base that includes four layer-4 projections. This in-memory 18-target screen passed eager-attention v4: English/Japanese PPL 1029.832/1140.692, instruction 62.5000%, zero collapse (`runs/gemma4-eighteen-h1024-layer3-o-retry-eager-v4-20260925.json`). The changed context therefore changed the model-level interaction; this is an observed result, not an explanation of its cause.
+
+Layer-3 `o_proj` was saved on RX 9070 XT as hard G128 codes, FP32 scales, and reconstructed BF16 weights in `runs/gemma4-fixed-h1024-layer3-o-hard-gpu-20260925.safetensors` (SHA-256 `f4e7a952978aed6add1079ba9d8e3cf7174b6f74336872391850f4eb4048ed92`). Separate processes reloaded all six fixed-Hadamard artifacts plus the saved layer-0 and layer-1 `q_proj` artifacts, checked provenance/hashes/reconstruction, and compared with the matched eager-attention BF16 controls:
+
+| Eager attention split | Model | English PPL | Japanese PPL | Instruction | Collapse | Gate |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| v4 validation | BF16 | 1351.609 | 1722.587 | 57.8125% | 0/64 | reference |
+| v4 validation | Saved 18-target G128 | 1031.133 | 1141.145 | 62.5000% | 0/64 | PASS |
+| v5 test | BF16 | 1272.395 | 1427.770 | 59.3750% | 0/64 | reference |
+| v5 test | Saved 18-target G128 | 1020.237 | 983.749 | 60.9375% | 0/64 | PASS |
+
+The saved v4 result differed slightly from its in-memory screen, although both passed. An independent saved v5 reload reproduced the summary and all 64 instruction answer hashes exactly, with matching data/protocol fingerprints. The reports are `runs/gemma4-eighteen-h1024-layer3-o-saved-eager-v{4,5}-20260925.json` and `runs/gemma4-eighteen-h1024-layer3-o-saved-eager-v5-repeat-20260925.json`. This remains a **18/205** partial pilot with 187 canonical projections in BF16; v4/v5 are already opened, and native packed ternary performance has not been measured.
