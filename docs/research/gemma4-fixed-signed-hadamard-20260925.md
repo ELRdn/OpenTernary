@@ -233,3 +233,32 @@ The `down_proj`-omitted layer-1 `v_proj`/`o_proj`/`gate_proj` triple was GPU-mat
 Independent reloads passed both splits. The v4 repeat had English/Japanese PPL 1186.757/1367.050 and the same instruction score; two of 64 response hashes differed. The v5 repeat reproduced the summary and all 64 response hashes exactly. Reports are `runs/gemma4-twentyone-h1024-layer1-v-o-gate-saved-eager-v{4,5}-20260925.json` and their `-repeat` counterparts. This is a **21/205** partial pilot with 184 canonical projections still BF16, residual process-level variation on v4, and no unopened final test.
 
 The v5 quality runner measured 18-target inference at 91.032 and 93.101 seconds, while two BF16 eager controls measured 82.703 and 52.834 seconds on the same RX 9070 XT. The BF16 timing spread is too large for a stable speed ratio from these samples. The research runtime keeps reconstructed BF16 weights and Python FP32 rotation hooks, so these timings and memory figures do not estimate native packed ternary throughput. A controlled repeated speed comparison remains open.
+
+## Layer-5 sensitivity and saved 24-target pilot
+
+The saved 21-target base was held fixed. Adding all seven canonical layer-5 projections at once with signed H1024/G128 failed eager-attention v4: English/Japanese PPL 2038.972/2174.610, instruction 64.0625%, zero collapse. The fixed gate failed both PPL regressions and the composite score (`runs/gemma4-twentyeight-h1024-layer5-all-eager-v4-20260925.json`). A high instruction score did not compensate for language-modeling degradation.
+
+Each layer-5 projection was then screened individually against the same eager BF16 v4 control:
+
+| Single layer-5 addition | English PPL | Japanese PPL | Instruction | v4 gate |
+| --- | ---: | ---: | ---: | --- |
+| `q_proj` | 1192.737 | 1367.547 | 56.2500% | PASS |
+| `k_proj` | 1188.130 | 1348.745 | 56.2500% | PASS |
+| `v_proj` | 1220.895 | 1438.185 | 54.6875% | FAIL, instruction |
+| `o_proj` | 1218.223 | 1459.534 | 54.6875% | FAIL, instruction |
+| `gate_proj` | 1573.064 | 1714.004 | 64.0625% | FAIL, English PPL |
+| `up_proj` | 1325.524 | 1451.355 | 51.5625% | FAIL, instruction |
+| `down_proj` | 1291.770 | 1418.053 | 59.3750% | PASS |
+
+All seven had zero collapse; reports are `runs/gemma4-twentytwo-h1024-layer5-<role>-eager-v4-20260925.json`. The three passing roles (`q_proj`, `k_proj`, `down_proj`) also passed together in memory on v4: English/Japanese PPL 1320.688/1401.848, instruction 59.375%, zero collapse (`runs/gemma4-twentyfour-h1024-layer5-q-k-down-eager-v4-20260925.json`). Its English-PPL margin was smaller than the prior 21-target base, so saved reload and repeat were required.
+
+The three layer-5 weights were GPU-materialized to hard G128 codes, FP32 scales, and BF16 reconstruction in `runs/gemma4-fixed-h1024-layer5-q-k-down-hard-gpu-20260925.safetensors` (SHA-256 `8fcf93b7a28f7df7a515b9d7683f635ffdec20ee93c913b679ae038f8b9ebc7d`). The saved artifacts were independently reloaded, provenance/hashes/reconstruction checked, and evaluated against matched eager BF16 controls:
+
+| Eager attention split | Model | English PPL | Japanese PPL | Instruction | Collapse | Gate |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| v4 validation | BF16 | 1351.609 | 1722.587 | 57.8125% | 0/64 | reference |
+| v4 validation | Saved 24-target G128 | 1321.234 | 1398.618 | 59.3750% | 0/64 | PASS |
+| v5 test | BF16 | 1272.395 | 1427.770 | 59.3750% | 0/64 | reference |
+| v5 test | Saved 24-target G128 | 1212.671 | 1185.659 | 60.9375% | 0/64 | PASS |
+
+Independent saved reloads on both splits reproduced the summary and all 64 instruction answer hashes exactly, with matching data/protocol fingerprints. The reports are `runs/gemma4-twentyfour-h1024-layer5-q-k-down-saved-eager-v{4,5}-20260925.json` and their `-repeat` counterparts. This remains **24/205** canonical projections, with 181 still BF16. v4/v5 have been used for development; an unopened final test is necessary. The runtime still dequantizes hard weights to BF16 and applies rotation in Python hooks, so packed ternary efficiency is unverified.
