@@ -262,3 +262,31 @@ The three layer-5 weights were GPU-materialized to hard G128 codes, FP32 scales,
 | v5 test | Saved 24-target G128 | 1212.671 | 1185.659 | 60.9375% | 0/64 | PASS |
 
 Independent saved reloads on both splits reproduced the summary and all 64 instruction answer hashes exactly, with matching data/protocol fingerprints. The reports are `runs/gemma4-twentyfour-h1024-layer5-q-k-down-saved-eager-v{4,5}-20260925.json` and their `-repeat` counterparts. This remains **24/205** canonical projections, with 181 still BF16. v4/v5 have been used for development; an unopened final test is necessary. The runtime still dequantizes hard weights to BF16 and applies rotation in Python hooks, so packed ternary efficiency is unverified.
+
+## Layer-6 sensitivity and saved 28-target pilot
+
+The saved 24-target base was held fixed. Adding all seven canonical layer-6 projections with signed H1024/G128 failed eager-attention v4: English/Japanese PPL 1452.214/1562.144, instruction 50%, zero collapse (`runs/gemma4-thirtyone-h1024-layer6-all-eager-v4-20260925.json`). The fixed gate failed English PPL and instruction accuracy. Individual additions against the same eager BF16 v4 control gave:
+
+| Single layer-6 addition | English PPL | Japanese PPL | Instruction | v4 gate |
+| --- | ---: | ---: | ---: | --- |
+| `q_proj` | 1335.970 | 1430.228 | 57.8125% | PASS |
+| `k_proj` | 1321.921 | 1383.381 | 59.3750% | PASS |
+| `v_proj` | 1219.868 | 1336.330 | 59.3750% | PASS |
+| `o_proj` | 1219.765 | 1367.855 | 53.1250% | FAIL, instruction |
+| `gate_proj` | 1603.237 | 1625.942 | 59.3750% | FAIL, English PPL |
+| `up_proj` | 1315.536 | 1455.268 | 56.2500% | PASS |
+| `down_proj` | 1327.980 | 1421.810 | 53.1250% | FAIL, instruction |
+
+All seven had zero collapse; reports are `runs/gemma4-twentyfive-h1024-layer6-<role>-eager-v4-20260925.json`. The four individually passing roles (`q_proj`, `k_proj`, `v_proj`, `up_proj`) also passed together in memory on v4: English/Japanese PPL 1224.313/1368.501, instruction 60.9375%, zero collapse (`runs/gemma4-twentyeight-h1024-layer6-q-k-v-up-eager-v4-20260925.json`). Individual results were therefore checked again as a combined candidate.
+
+These four weights were materialized on RX 9070 XT to hard G128 codes, FP32 scales, and reconstructed BF16 weights in `runs/gemma4-fixed-h1024-layer6-q-k-v-up-hard-gpu-20260925.safetensors` (SHA-256 `004feb4640076a02531ba4783804a48badccba1596e88ab9ebb35bff347ec328`). Independent processes reloaded that artifact with the earlier disjoint artifacts and checked their provenance, hashes, and G128 reconstruction. Matched eager-attention BF16 controls and saved candidate results were:
+
+| Eager attention split | Model | English PPL | Japanese PPL | Instruction | Collapse | Gate |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| v4 validation | BF16 | 1351.609 | 1722.587 | 57.8125% | 0/64 | reference |
+| v4 validation | Saved 28-target G128 | 1219.284 | 1366.518 | 60.9375% | 0/64 | PASS |
+| v5 test | BF16 | 1272.395 | 1427.770 | 59.3750% | 0/64 | reference |
+| v5 test, first reload | Saved 28-target G128 | 1137.889 | 1144.809 | 60.9375% | 0/64 | PASS |
+| v5 test, later reloads (2) | Saved 28-target G128 | 1138.880 | 1147.549 | 59.3750% | 0/64 | PASS |
+
+The v4 saved reload and repeat reproduced the same summary and all 64 response hashes. The first v5 run differed from both later v5 runs on two of 64 response hashes; the latter two reproduced each other. All three passed the fixed gate, but process-level numerical variation remains. Reports are `runs/gemma4-twentyeight-h1024-layer6-q-k-v-up-saved-eager-v{4,5}-20260925.json`, the v4/v5 `-repeat` reports, and the v5 `-repeat2` report. This covers **28/205** canonical projections, leaving 177 in BF16. Both splits were used during development, so an unopened final test is required. The research runtime reconstructs BF16 weights and applies FP32 rotation in Python hooks; it does not establish packed ternary speed or memory efficiency.
