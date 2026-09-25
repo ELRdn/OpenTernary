@@ -36,6 +36,8 @@ def main() -> None:
     parser.add_argument("--additional-roles", nargs="+")
     parser.add_argument("--fixed-hadamard-additions", action="store_true")
     parser.add_argument("--fixed-hadamard-artifact-report", type=Path)
+    parser.add_argument("--fixed-hadamard-artifact-reports", type=Path, nargs="+")
+    parser.add_argument("--fixed-hadamard-modules", nargs="+")
     parser.add_argument("--fixed-hadamard-block", type=int, default=1024)
     parser.add_argument("--fixed-hadamard-seed", type=int, default=42)
     parser.add_argument("--data", type=Path, required=True)
@@ -48,13 +50,10 @@ def main() -> None:
     parser.add_argument("--diagnose-deterministic-algorithms", action="store_true")
     parser.add_argument("--diagnose-layer-hashes", action="store_true")
     parser.add_argument("--diagnose-sync-layers", action="store_true")
-    parser.add_argument("--diagnose-eager-attention", action="store_true")
+    parser.add_argument("--eager-attention", "--diagnose-eager-attention", dest="eager_attention", action="store_true")
     args = parser.parse_args()
     if args.diagnose_case_id is None and (
-        args.diagnose_quality_first
-        or args.diagnose_layer_hashes
-        or args.diagnose_sync_layers
-        or args.diagnose_eager_attention
+        args.diagnose_quality_first or args.diagnose_layer_hashes or args.diagnose_sync_layers
     ):
         raise ValueError("diagnostic options require --diagnose-case-id")
     if args.diagnose_deterministic_algorithms:
@@ -94,53 +93,88 @@ def main() -> None:
     upstream = load_file(str(layer0_artifact), device="cpu")
     candidate = load_file(str(candidate_artifact), device="cpu")
     additional = None
-    fixed_artifact = None
+    fixed_artifacts: dict[str, dict[str, torch.Tensor]] = {}
+    fixed_artifact_shas: dict[str, str] = {}
     additional_sha = None
     additional_names: set[str] = set()
     if args.fixed_hadamard_additions and args.additional_block_report is not None:
         raise ValueError("fixed Hadamard additions and saved block additions are mutually exclusive")
     if args.fixed_hadamard_artifact_report is not None and not args.fixed_hadamard_additions:
         raise ValueError("saved fixed Hadamard additions require --fixed-hadamard-additions")
+    if args.fixed_hadamard_artifact_reports and not args.fixed_hadamard_additions:
+        raise ValueError("saved fixed Hadamard additions require --fixed-hadamard-additions")
+    if args.fixed_hadamard_artifact_report is not None and args.fixed_hadamard_artifact_reports:
+        raise ValueError("choose one fixed Hadamard artifact report option")
+    if args.fixed_hadamard_modules and (not args.fixed_hadamard_additions or args.additional_roles):
+        raise ValueError("explicit fixed Hadamard modules require additions without role filters")
     if args.fixed_hadamard_block not in (128, 256, 512, 1024):
         raise ValueError("unsupported fixed Hadamard block size")
     if args.additional_roles and args.additional_block_report is None and not args.fixed_hadamard_additions:
         raise ValueError("additional roles require an additional block report")
     if args.fixed_hadamard_additions:
-        available_names = {
-            item for item in rotations if item.startswith("model.language_model.layers.1.") and item != name
-        }
-        available_roles = {item.rsplit(".", 1)[-1] for item in available_names}
-        if args.additional_roles and not set(args.additional_roles) <= available_roles:
-            raise ValueError("unknown additional module role")
-        additional_names = {
-            item
-            for item in available_names
-            if not args.additional_roles or item.rsplit(".", 1)[-1] in args.additional_roles
-        }
-        if args.fixed_hadamard_artifact_report is not None:
-            fixed_report = json.loads(args.fixed_hadamard_artifact_report.read_text(encoding="utf-8"))
-            fixed_path = args.fixed_hadamard_artifact_report.with_suffix(".safetensors")
-            additional_sha = hashlib.sha256(fixed_path.read_bytes()).hexdigest()
+        if args.fixed_hadamard_modules:
+            available_names = set(rotations) - layer0_names - {name}
+            additional_names = set(args.fixed_hadamard_modules)
+            if len(additional_names) != len(args.fixed_hadamard_modules) or not additional_names <= available_names:
+                raise ValueError("explicit fixed Hadamard modules must be distinct canonical targets")
+        else:
+            available_names = {
+                item for item in rotations if item.startswith("model.language_model.layers.1.") and item != name
+            }
+            available_roles = {item.rsplit(".", 1)[-1] for item in available_names}
+            if args.additional_roles and not set(args.additional_roles) <= available_roles:
+                raise ValueError("unknown additional module role")
+            additional_names = {
+                item
+                for item in available_names
+                if not args.additional_roles or item.rsplit(".", 1)[-1] in args.additional_roles
+            }
+        report_paths = (
+            [args.fixed_hadamard_artifact_report]
+            if args.fixed_hadamard_artifact_report is not None
+            else args.fixed_hadamard_artifact_reports or []
+        )
+        for report_path in report_paths:
+            fixed_report = json.loads(report_path.read_text(encoding="utf-8"))
+            fixed_path = report_path.with_suffix(".safetensors")
+            artifact_sha = hashlib.sha256(fixed_path.read_bytes()).hexdigest()
+            report_names = [entry.get("name") for entry in fixed_report.get("modules", [])]
+            report_layer = fixed_report.get("layer")
             if (
                 fixed_report.get("schema_version") != 1
                 or fixed_report.get("status") != "fixed_signed_hadamard_hard_g128_roles"
                 or fixed_report.get("source") != str(source)
                 or fixed_report.get("source_identity") != snapshot_identity(source)
                 or fixed_report.get("targets_manifest_sha256") != manifest_sha
-                or fixed_report.get("layer") != 1
-                or set(fixed_report.get("roles", [])) != {name.rsplit(".", 1)[-1] for name in additional_names}
-                or {entry.get("name") for entry in fixed_report.get("modules", [])} != additional_names
+                or type(report_layer) is not int
+                or not 0 <= report_layer < 35
+                or not report_names
+                or any(not isinstance(item, str) for item in report_names)
+                or len(report_names) != len(set(report_names))
+                or not set(report_names) <= additional_names
+                or any(not item.startswith(f"model.language_model.layers.{report_layer}.") for item in report_names)
+                or set(fixed_report.get("roles", [])) != {item.rsplit(".", 1)[-1] for item in report_names}
                 or fixed_report.get("block") != args.fixed_hadamard_block
                 or fixed_report.get("seed") != args.fixed_hadamard_seed
                 or fixed_report.get("group_size") != 128
-                or fixed_report.get("artifact_sha256") != additional_sha
+                or fixed_report.get("artifact_sha256") != artifact_sha
             ):
                 raise ValueError("fixed Hadamard artifact provenance mismatch")
             fixed_artifact = load_file(str(fixed_path), device="cpu")
             if set(fixed_artifact) != {
-                name + suffix for name in additional_names for suffix in (".weight", ".codes", ".scales")
+                item + suffix for item in report_names for suffix in (".weight", ".codes", ".scales")
             }:
                 raise ValueError("fixed Hadamard artifact tensor set mismatch")
+            for item in report_names:
+                if item in fixed_artifacts:
+                    raise ValueError(f"duplicate fixed Hadamard artifact module: {item}")
+                fixed_artifacts[item] = fixed_artifact
+                fixed_artifact_shas[item] = artifact_sha
+        if report_paths:
+            if set(fixed_artifacts) != additional_names:
+                raise ValueError("fixed Hadamard artifacts do not cover all selected modules")
+            if len(report_paths) == 1:
+                additional_sha = next(iter(fixed_artifact_shas.values()))
     if args.additional_block_report is not None:
         additional_artifact = args.additional_block_report.with_suffix(".safetensors")
         additional_report = json.loads(args.additional_block_report.read_text(encoding="utf-8"))
@@ -185,7 +219,7 @@ def main() -> None:
     )
     processor = load_processor(cfg, source)
     model = load_model(cfg, source, torch.bfloat16, {"": "cuda:0"}).eval()
-    if args.diagnose_eager_attention:
+    if args.eager_attention:
         model.get_submodule("model.language_model").config._attn_implementation = "eager"
         active_attention = {
             model.get_submodule(f"model.language_model.layers.{index}.self_attn").config._attn_implementation
@@ -207,8 +241,8 @@ def main() -> None:
                 fixed_signs = fixed_signs_for_module(
                     module_name, original.shape[-1], args.fixed_hadamard_seed, original.device
                 )
-                if fixed_artifact is not None:
-                    tensors = fixed_artifact
+                if module_name in fixed_artifacts:
+                    tensors = fixed_artifacts[module_name]
                     prefix = module_name + "."
                 else:
                     rotated = signed_hadamard_last_dim(original, args.fixed_hadamard_block, fixed_signs)
@@ -427,10 +461,12 @@ def main() -> None:
             "status": "saved_candidate_single_case_reproducibility_diagnostic",
             "case_id": args.diagnose_case_id,
             "artifact_sha256": [layer0_sha, candidate_sha, additional_sha],
+            "additional_artifact_sha256_by_module": fixed_artifact_shas,
+            "additional_modules": sorted(additional_names),
             "deterministic_algorithms": args.diagnose_deterministic_algorithms,
             "layer_hashes_enabled": args.diagnose_layer_hashes,
             "synchronize_layers": args.diagnose_sync_layers,
-            "eager_attention": args.diagnose_eager_attention,
+            "eager_attention": args.eager_attention,
             "preceding_quality": preceding_quality,
             "trials": [
                 {
@@ -463,10 +499,14 @@ def main() -> None:
         cfg, args.data, model=model, processor=processor, split=args.split, max_length=128, stride=64
     )
     baseline = json.loads(args.baseline_quality.read_text(encoding="utf-8"))
+    baseline_eager = baseline.get("research_execution", {}).get("text_attention_implementation") == "eager"
+    if args.eager_attention != baseline_eager:
+        raise ValueError("candidate and BF16 control must use the same attention implementation")
+    baseline_identity = baseline.get("research_execution", {}).get("source_identity", baseline["identity"])
     if (
         quality["protocol_fingerprint"] != baseline["protocol_fingerprint"]
         or quality["dataset_fingerprint"] != baseline["dataset_fingerprint"]
-        or snapshot_identity(source) != baseline["identity"]
+        or snapshot_identity(source) != baseline_identity
         or baseline["protocol"]["split"] != args.split
     ):
         raise ValueError("quality protocol or data mismatch")
@@ -474,7 +514,7 @@ def main() -> None:
     result = {
         "status": (
             "saved_fixed_hadamard_hard_ternary_quality_only"
-            if fixed_artifact is not None
+            if fixed_artifacts
             else "saved_eight_plus_in_memory_fixed_hadamard_quality_only"
             if args.fixed_hadamard_additions
             else "saved_rotated_hard_ternary_quality_only"
@@ -484,12 +524,15 @@ def main() -> None:
         "candidate_artifact_sha256": candidate_sha,
         "upstream_artifact_sha256": layer0_sha,
         "additional_artifact_sha256": additional_sha,
+        "additional_artifact_sha256_by_module": fixed_artifact_shas,
+        "additional_modules": sorted(additional_names),
         "ternary_module_count": len(layer0_names) + 1 + len(additional_names),
         "additional_roles": sorted(item.rsplit(".", 1)[-1] for item in additional_names),
         "fixed_hadamard_additions": args.fixed_hadamard_additions,
         "fixed_hadamard_block": args.fixed_hadamard_block if args.fixed_hadamard_additions else None,
         "fixed_hadamard_seed": args.fixed_hadamard_seed if args.fixed_hadamard_additions else None,
-        "source_identity": baseline["identity"],
+        "attention_implementation": "eager" if args.eager_attention else "default",
+        "source_identity": baseline_identity,
         "baseline_summary": baseline["summary"],
         "candidate_summary": quality["summary"],
         "quality_gate": gate,

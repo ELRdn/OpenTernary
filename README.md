@@ -21,6 +21,8 @@ Product planning: [CLI Product Roadmap](CLI_ROADMAP.md) covers CLI reliability, 
 
 **Eager-attention follow-up (2026-09-25):** The same saved 10-target artifact combination passed matched BF16 comparisons on v4 validation and v5 test with eager text attention on RX 9070 XT. This partial pilot does not change the failed all-205 result; v4/v5 have already been opened, and a new final test is still required. See the [research record](docs/research/gemma4-fixed-signed-hadamard-20260925.md).
 
+**Eleven-target follow-up (2026-09-25):** Adding signed H1024 layer-2 `up_proj` and reloading its hard-G128 artifact passed eager-attention matched BF16 gates on v4 and v5. The other screened layer-2 `q_proj`/`k_proj` additions failed the v4 instruction gate. This remains an 11/205-target pilot; see the [research record](docs/research/gemma4-fixed-signed-hadamard-20260925.md).
+
 ---
 
 ## Quickstart (core CLI)

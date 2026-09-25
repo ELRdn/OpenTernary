@@ -84,3 +84,24 @@ Gemma 4 text attention was switched from the default path to the Transformers ea
 The v4 candidate full-quality run repeated in two independent processes with identical summary values. Six independent eager-attention single-case reloads also all answered `NASA`. The v4 composite score against the eager BF16 control was 0.109206; v5 was 0.091267. Each comparison matched its source identity, dataset fingerprint, and quality-runner protocol fingerprint. The runner's `quality-runner-v1` protocol hash does **not** encode the attention implementation; both scripts explicitly assert and record `eager`, so reports from different attention modes must not be compared as equivalent merely because their runner hashes match. The BF16 controls are saved at `runs/gemma4-bf16-eager-v{4,5}-research-20260925.json`; the candidate summaries and artifact hashes are in `runs/gemma4-ten-h1024-eager-quality-repeat-20260925.json` and `runs/gemma4-ten-h1024-eager-v5-research-20260925.json`. Hash-checked gate reports are `runs/gemma4-ten-h1024-eager-v{4,5}-compare-20260925.json`. The BF16 control and comparison code is in `scripts/evaluate_gemma4_bf16_eager_research.py` and `scripts/compare_gemma4_eager_research.py`. A crossed v4/v5 comparison was rejected without writing an artifact.
 
 This is a promising **partial** pilot under eager attention, not a robustly accepted all-205 model. The default attention implementation still showed a process-level quality failure. Both v4 and v5 were opened in earlier research, so a newly separated final test is required for acceptance. A native packed ternary runtime was not exercised; the research model still uses dequantized BF16 hard weights and Python input-rotation hooks.
+
+## Layer-2 incremental expansion
+
+Keeping the saved layer-0 seven-target block and layer-1 `q_proj` fixed, and reconstructing the two H1024 layer-1 additions from the same BF16 source on GPU, one layer-2 projection at a time was screened on eager-attention v4 validation. The matched BF16 control remained 1351.609/1722.587 PPL and 57.8125% instruction exact match.
+
+| Layer-2 addition | Total targets | English PPL | Japanese PPL | Instruction | v4 gate |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `self_attn.q_proj` | 11 | 1170.221 | 1393.372 | 53.1250% | FAIL, instruction |
+| `self_attn.k_proj` | 11 | 1163.478 | 1389.216 | 54.6875% | FAIL, instruction |
+| `mlp.up_proj` | 11 | 1190.294 | 1442.574 | 56.2500% | PASS |
+
+The passing `up_proj` was saved as hard G128 codes, scales, and BF16 reconstructed weights in `runs/gemma4-fixed-h1024-layer2-up-hard-gpu-20260925.safetensors` (SHA-256 `c15930ec1503f4a293f46cbac96697e170c0f54f5fe6fd9c0c8c17e5847fa4d6`). Five independent GPU re-quantizations of the source tensor matched the saved codes and BF16 weights exactly. The evaluator was extended to accept multiple hash-checked, disjoint fixed-Hadamard artifact reports, with per-module source, target-manifest, layer, role, seed, block, G128, tensor-set, and reconstruction checks. It reloaded the layer-1 `k_proj`/`up_proj` artifact and the layer-2 `up_proj` artifact together with the saved layer-0 block and layer-1 `q_proj`.
+
+| Eager attention split | Model | English PPL | Japanese PPL | Instruction | Collapse | Gate |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| v4 validation | BF16 | 1351.609 | 1722.587 | 57.8125% | 0/64 | reference |
+| v4 validation | Saved 11-target G128 | 1192.211 | 1431.457 | 57.8125% | 0/64 | PASS |
+| v5 test | BF16 | 1272.395 | 1427.770 | 59.3750% | 0/64 | reference |
+| v5 test | Saved 11-target G128 | 1263.181 | 1123.315 | 57.8125% | 0/64 | PASS |
+
+Two independent v4 reload evaluations produced identical summary values. The v4 and v5 composite scores were 0.100429 and 0.072480. Matching source identity, data and protocol fingerprints, and eager attention were checked against the BF16 controls. Saved reports: `runs/gemma4-eleven-h1024-layer2-up-saved-eager-v4-20260925.json`, its `-repeat-` counterpart, and `runs/gemma4-eleven-h1024-layer2-up-saved-eager-v5-20260925.json`. The in-memory screen and saved reload had slightly different metrics; the layer-2 saved codes and BF16 weights reproduced exactly across five GPU conversions, while identical behavior for the entire in-memory combination was not proven. The 11-target result is still partial: 194 canonical targets remain, no single all-205 accepted snapshot exists, and v4/v5 cannot serve as an unopened final test.
