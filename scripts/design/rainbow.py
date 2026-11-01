@@ -81,3 +81,20 @@ def colourise2(lab, L=0.74, C=0.19, h0=H0):
     ring = lab == 3
     rgb[ring] = np.array([0.36, 0.37, 0.42])
     return rgb, lab >= 0
+
+from scipy.ndimage import gaussian_filter
+
+def colourise3(lab, L=0.74, C=0.19, h0=H0, span=75.0, ring_rgb=(0.36, 0.37, 0.42)):
+    """Each band keeps its own hue family (span < 120 leaves a hue break between bands)."""
+    n = lab.shape[0]
+    rgb = np.zeros((n, n, 3))
+    sig = n / 120
+    for k in range(3):
+        m = lab == k
+        if not m.any():
+            continue
+        t = geodesic_t(m)
+        t = gaussian_filter(t * m, sig) / np.maximum(gaussian_filter(m.astype(float), sig), 1e-6)
+        rgb[m] = oklch(L, C, h0 + 120 * k + span * np.clip(t[m], 0, 1))
+    rgb[lab == 3] = np.array(ring_rgb)
+    return rgb, lab >= 0
