@@ -1,0 +1,98 @@
+[
+ {
+  "name": "Sumi",
+  "jp": "墨",
+  "mode": "dark",
+  "colors": {
+   "bg": "#0e0f12",
+   "surface": "#16171a",
+   "border": "#292b30",
+   "text": "#e5e8ec",
+   "muted": "#8f9298",
+   "accent": "#97c9fd",
+   "ok": "#40e5e5",
+   "warn": "#f0ba59",
+   "err": "#f2725b",
+   "info": "#8bc3fc"
+  },
+  "checks": {
+   "text/bg": 15.59,
+   "muted/bg": 6.14,
+   "ok/bg": 12.37,
+   "warn/bg": 10.84,
+   "err/bg": 6.69,
+   "info/bg": 10.32,
+   "accent/bg": 11.03,
+   "ok-vs-err dE (normal/protan/deutan/tritan)": [
+    32.2,
+    27.7,
+    18.6,
+    38.1
+   ]
+  }
+ },
+ {
+  "name": "Yoru",
+  "jp": "夜",
+  "mode": "dark",
+  "colors": {
+   "bg": "#090c1c",
+   "surface": "#121627",
+   "border": "#272c46",
+   "text": "#e9ebf3",
+   "muted": "#949cc2",
+   "accent": "#b89ffe",
+   "ok": "#40e5e5",
+   "warn": "#f0ba59",
+   "err": "#f2725b",
+   "info": "#8bc3fc"
+  },
+  "checks": {
+   "text/bg": 16.32,
+   "muted/bg": 7.21,
+   "ok/bg": 12.54,
+   "warn/bg": 10.98,
+   "err/bg": 6.78,
+   "info/bg": 10.46,
+   "accent/bg": 8.72,
+   "ok-vs-err dE (normal/protan/deutan/tritan)": [
+    32.2,
+    27.7,
+    18.6,
+    38.1
+   ]
+  }
+ },
+ {
+  "name": "Shiro",
+  "jp": "白",
+  "mode": "light",
+  "colors": {
+   "bg": "#f8f7f2",
+   "surface": "#fffdf9",
+   "border": "#d1cfc9",
+   "text": "#1c1a17",
+   "muted": "#65635d",
+   "accent": "#5550c0",
+   "ok": "#075f5f",
+   "warn": "#815c0b",
+   "err": "#bd280f",
+   "info": "#0c6bb7"
+  },
+  "checks": {
+   "text/bg": 16.19,
+   "muted/bg": 5.6,
+   "ok/bg": 6.96,
+   "warn/bg": 5.64,
+   "err/bg": 5.64,
+   "info/bg": 5.15,
+   "accent/bg": 5.94,
+   "ok-vs-err dE (normal/protan/deutan/tritan)": [
+    27.1,
+    10.4,
+    16.8,
+    31.0
+   ]
+  }
+ }
+]
