@@ -48,9 +48,30 @@ def test_mark_sizes_are_square_braille() -> None:
     assert brand.mark(10).plain == brand.mark(16).plain  # smallest baked size
 
 
-def test_palette_keeps_three_band_families() -> None:
+def test_palette_keeps_tomoe_and_ring_bands() -> None:
     asset = brand.load_mark()
-    assert {band for _, band in asset.palette} == {0, 1, 2}
+    assert {band for _, band in asset.palette} == {0, 1, 2, 3}  # +1, 0, -1, ring
+
+
+def _rgb(hex_colour: str) -> tuple[int, int, int]:
+    return int(hex_colour[1:3], 16), int(hex_colour[3:5], 16), int(hex_colour[5:7], 16)
+
+
+def test_baked_colours_follow_the_official_svg() -> None:
+    """Each tomoe's baked colours sit closest to its own SVG gradient colour."""
+    asset = brand.load_mark()
+    trits = (1, 0, -1)
+    for band, trit in enumerate(trits):
+        cols = [_rgb(c) for c, b in asset.palette if b == band]
+        mean = tuple(sum(c[i] for c in cols) / len(cols) for i in range(3))
+        dist = {t: sum((mean[i] - _rgb(brand.TRIT[t])[i]) ** 2 for i in range(3)) for t in trits}
+        assert min(dist, key=dist.__getitem__) == trit, (band, mean)
+
+
+def test_clockwise_walks_frames_backwards() -> None:
+    n = brand.mark_frame_count()
+    assert brand.mark(30, 1, clockwise=True).plain == brand.mark(30, n - 1).plain
+    assert brand.mark(30, 0, clockwise=True).plain == brand.mark(30, 0).plain
 
 
 def _band_centroid_angle(frame: int, band: int, cols: int = 30) -> float:

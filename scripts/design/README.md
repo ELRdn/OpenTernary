@@ -1,4 +1,4 @@
-# Brand design tooling (draft)
+# Brand design tooling
 
 Generates the mitsudomoe mark candidates, the perceptual rainbow, and the UI palette
 candidates used in `docs/TUI_DESIGN.md`. Design-time only: needs `numpy scipy pillow`
@@ -11,3 +11,6 @@ candidates used in `docs/TUI_DESIGN.md`. Design-time only: needs `numpy scipy pi
 | `sheet_terminal.py OUT.svg` | Braille with optical sizing (gaps >= 1.6 dots) |
 | `palettes.py palettes.json` | 3 UI palettes + WCAG contrast + CVD (Machado 2009) checks |
 | `palette_mock.py NAME OUT.svg` | home-screen mock in palette NAME (Sumi / Yoru / Shiro) |
+| `bake_mark.py` | bakes `docs/brand/openternary-v1.0.svg` into `src/openternary/ui/assets/tomoe.otmk` (needs Node + Playwright) |
+
+The other scripts are the selection-stage explorations kept for the record.

@@ -1,9 +1,9 @@
-"""OpenTernary brand: Yoru palette, 3D ANSI-Shadow wordmark, and the interlaced mitsudomoe mark.
+"""OpenTernary brand: Yoru palette, 3D ANSI-Shadow wordmark, and the official symbol.
 
-The mark (style A, 組紐三つ巴) is a geometric rebuild baked by ``scripts/design/bake_mark.py``
-into ``assets/tomoe_a.otmk``: Braille frames of the mark rotating counter-clockwise, each band
-in its own rainbow hue family (three bands = the three ternary states). Loading needs only the
-standard library, so no numerical dependency is added to the core install.
+The symbol is the owner's ``docs/brand/openternary-v1.0.svg`` (three rotated tomoe for
++1 / 0 / -1 inside a spectrum ring). ``scripts/design/bake_mark.py`` rasterises it exactly and
+bakes Braille rotation frames into ``assets/tomoe.otmk``; loading needs only the standard
+library, so no numerical dependency is added to the core install.
 """
 
 from __future__ import annotations
@@ -43,8 +43,9 @@ PALETTE = {
     "info": INFO,
 }
 
-HUE0 = 25.0  # hue (OKLCH degrees) at the head of band 0; band k starts at HUE0 + 120 k
-BAND_SPAN = 75.0  # hue range inside one band; the 45 degree gap keeps the three bands distinct
+# Colours taken from the official SVG (docs/brand/openternary-v1.0.svg).
+SPECTRUM = ("#ffa36b", "#ffd157", "#7aef9c", "#38d9d0", "#5e8dff", "#aa7eff", "#ef8dd0")  # ring
+SPECTRUM_STOPS = (0.0, 0.18, 0.34, 0.53, 0.72, 0.9, 1.0)
 
 
 def oklch(lightness: float, chroma: float, hue: float) -> str:
@@ -67,8 +68,22 @@ def oklch(lightness: float, chroma: float, hue: float) -> str:
     return "#" + "".join(f"{round(min(max(c, 0.0), 1.0) * 255):02x}" for c in rgb)
 
 
-# trit -> representative colour of its band (middle of the band's hue family)
-TRIT = {t: oklch(0.74, 0.19, HUE0 + 120 * k + BAND_SPAN / 2) for k, t in enumerate((1, 0, -1))}
+# trit -> the middle stop of that tomoe's gradient in the SVG (+1 amber, 0 mint, -1 violet)
+TRIT = {1: "#ffad55", 0: "#43efc5", -1: "#8168fa"}
+
+
+def spectrum(t: float) -> str:
+    """Colour of the ring gradient at position ``t`` in [0, 1] (linear between SVG stops)."""
+    t = min(max(t, 0.0), 1.0)
+    for (a, ca), (b, cb) in zip(
+        zip(SPECTRUM_STOPS, SPECTRUM, strict=True), zip(SPECTRUM_STOPS[1:], SPECTRUM[1:], strict=True), strict=False
+    ):
+        if t <= b:
+            u = (t - a) / (b - a)
+            rgb = (round(int(ca[i : i + 2], 16) * (1 - u) + int(cb[i : i + 2], 16) * u) for i in (1, 3, 5))
+            return "#" + "".join(f"{c:02x}" for c in rgb)
+    return SPECTRUM[-1]
+
 
 WORDMARK = (
     " ██████╗ ██████╗ ███████╗███╗   ██╗   ████████╗███████╗██████╗ ███╗   ██╗ █████╗ ██████╗ ██╗   ██╗",
@@ -83,7 +98,7 @@ WORDMARK_WIDTH = max(len(line) for line in WORDMARK)
 
 @lru_cache(maxsize=1)
 def _wordmark_gradient() -> tuple[str, ...]:
-    return tuple(oklch(0.82, 0.15, HUE0 + 330 * i / (WORDMARK_WIDTH - 1)) for i in range(WORDMARK_WIDTH))
+    return tuple(spectrum(i / (WORDMARK_WIDTH - 1)) for i in range(WORDMARK_WIDTH))
 
 
 def wordmark() -> Text:
@@ -127,7 +142,7 @@ class MarkAsset:
 
 @lru_cache(maxsize=1)
 def load_mark() -> MarkAsset:
-    raw = zlib.decompress(resources.files("openternary.ui").joinpath("assets/tomoe_a.otmk").read_bytes())
+    raw = zlib.decompress(resources.files("openternary.ui").joinpath("assets/tomoe.otmk").read_bytes())
     if raw[:4] != b"OTMK" or raw[4] != 1:
         raise ValueError("unsupported mark asset")
     frames, n_sizes, n_pal = raw[5], raw[6], raw[7]
@@ -155,13 +170,17 @@ def _best_size(cols: int) -> int:
     return max(fitting) if fitting else min(MARK_SIZES)
 
 
-@lru_cache(maxsize=256)
-def mark(cols: int = 30, frame: int = 0) -> Text:
-    """The mark at the largest baked size <= ``cols``; ``frame`` rotates it counter-clockwise."""
+@lru_cache(maxsize=512)
+def mark(cols: int = 30, frame: int = 0, clockwise: bool = False) -> Text:
+    """The symbol at the largest baked size <= ``cols``.
+
+    Successive ``frame`` values turn it counter-clockwise (or clockwise when asked); frames are
+    stored for counter-clockwise turns, so clockwise playback walks them backwards.
+    """
     asset = load_mark()
     size = _best_size(cols)
     rows, frames = asset.sizes[size]
-    cells = frames[frame % asset.frames]
+    cells = frames[(-frame if clockwise else frame) % asset.frames]
     out = Text(no_wrap=True)
     for cy in range(rows):
         for cx in range(size):

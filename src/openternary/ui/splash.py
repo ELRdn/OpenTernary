@@ -1,13 +1,15 @@
-"""Animated splash: the mitsudomoe turning counter-clockwise beside the wordmark.
+"""Animated splash: the OpenTernary symbol turning beside the wordmark.
 
-Run ``python -m openternary.ui.splash`` to preview in a real terminal. Motion is skipped when
-stdout is not a TTY or when ``OPENTERNARY_REDUCED_MOTION`` / ``NO_MOTION`` is set; the first
-frame is then printed once.
+Run ``python -m openternary.ui.splash`` (``--cw`` for clockwise) to preview in a real terminal.
+The default turn is counter-clockwise; ``OPENTERNARY_SPIN=cw`` changes it. Motion is skipped
+when stdout is not a TTY or when ``OPENTERNARY_REDUCED_MOTION`` / ``NO_MOTION`` is set; the
+first frame is then printed once.
 """
 
 from __future__ import annotations
 
 import os
+import sys
 import time
 
 from rich.console import Console, Group
@@ -26,7 +28,11 @@ def reduced_motion(console: Console) -> bool:
     return not console.is_terminal or any(v not in (None, "", "0") for v in flags)
 
 
-def frame(console: Console, index: int) -> Group:
+def clockwise_default() -> bool:
+    return os.environ.get("OPENTERNARY_SPIN", "ccw").lower() == "cw"
+
+
+def frame(console: Console, index: int, clockwise: bool = False) -> Group:
     width = console.size.width
     cols = 30 if width >= 100 else 24 if width >= 70 else 16
     info = Table.grid()
@@ -41,24 +47,25 @@ def frame(console: Console, index: int) -> Group:
     body = Table.grid(padding=(0, 3))
     body.add_column()
     body.add_column(vertical="middle")
-    body.add_row(brand.mark(cols, index), info)
+    body.add_row(brand.mark(cols, index, clockwise), info)
     return Group(brand.banner(width), Text(""), body)
 
 
-def play(seconds: float = 8.0, console: Console | None = None) -> None:
+def play(seconds: float = 8.0, console: Console | None = None, clockwise: bool | None = None) -> None:
     console = console or Console()
+    cw = clockwise_default() if clockwise is None else clockwise
     if reduced_motion(console):
-        console.print(frame(console, 0))
+        console.print(frame(console, 0, cw))
         return
     n = brand.mark_frame_count()
-    with Live(frame(console, 0), console=console, refresh_per_second=FPS, transient=False) as live:
+    with Live(frame(console, 0, cw), console=console, refresh_per_second=FPS, transient=False) as live:
         start = time.monotonic()
         i = 0
         while time.monotonic() - start < seconds:
             i += 1
-            live.update(frame(console, i % n))
+            live.update(frame(console, i % n, cw))
             time.sleep(1 / FPS)
 
 
 if __name__ == "__main__":
-    play()
+    play(clockwise=True if "--cw" in sys.argv[1:] else None)
