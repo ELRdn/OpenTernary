@@ -1,0 +1,1052 @@
+{
+  "backends_info_ternary": {
+    "envelope": {
+      "artifact_validation": "not_run",
+      "command": "info",
+      "execution": "completed",
+      "exit_code": 0,
+      "quality_acceptance": "not_run",
+      "schema_version": 1
+    },
+    "error_type": "NoneType",
+    "keys": [
+      "artifact_validation",
+      "command",
+      "error",
+      "execution",
+      "exit_code",
+      "quality_acceptance",
+      "result",
+      "schema_version"
+    ],
+    "process_exit": 0,
+    "result_shape": {
+      "api_version": "scalar",
+      "distribution": "scalar",
+      "evidence": "scalar",
+      "formats": [
+        "scalar"
+      ],
+      "implementation": "scalar",
+      "installation": "scalar",
+      "name": "scalar",
+      "native_kernel": "scalar",
+      "operations": {
+        "convert": "scalar",
+        "model_reload": "scalar",
+        "native_low_bit_execution": "scalar",
+        "save": "scalar",
+        "tensor_reload": "scalar"
+      },
+      "quality": "scalar",
+      "required_version": "scalar",
+      "schemes": [
+        "scalar"
+      ],
+      "version": "scalar",
+      "weight_dtypes": [
+        "scalar"
+      ]
+    }
+  },
+  "backends_info_unknown": {
+    "envelope": {
+      "artifact_validation": "not_run",
+      "command": "info",
+      "execution": "failed",
+      "exit_code": 3,
+      "quality_acceptance": "not_run",
+      "schema_version": 1
+    },
+    "error_type": "str",
+    "keys": [
+      "artifact_validation",
+      "command",
+      "error",
+      "execution",
+      "exit_code",
+      "quality_acceptance",
+      "result",
+      "schema_version"
+    ],
+    "process_exit": 3,
+    "result_shape": {}
+  },
+  "backends_list": {
+    "envelope": {
+      "artifact_validation": "not_run",
+      "command": "list",
+      "execution": "completed",
+      "exit_code": 0,
+      "quality_acceptance": "not_run",
+      "schema_version": 1
+    },
+    "error_type": "NoneType",
+    "keys": [
+      "artifact_validation",
+      "command",
+      "error",
+      "execution",
+      "exit_code",
+      "quality_acceptance",
+      "result",
+      "schema_version"
+    ],
+    "process_exit": 0,
+    "result_shape": {
+      "backends": [
+        {
+          "api_version": "scalar",
+          "distribution": "scalar",
+          "evidence": "scalar",
+          "formats": [
+            "scalar"
+          ],
+          "implementation": "scalar",
+          "installation": "scalar",
+          "name": "scalar",
+          "native_kernel": "scalar",
+          "operations": {
+            "convert": "scalar",
+            "model_reload": "scalar",
+            "native_low_bit_execution": "scalar",
+            "save": "scalar",
+            "tensor_reload": "scalar"
+          },
+          "quality": "scalar",
+          "required_version": "scalar",
+          "schemes": [
+            "scalar"
+          ],
+          "version": "scalar",
+          "weight_dtypes": [
+            "scalar"
+          ]
+        }
+      ]
+    }
+  },
+  "benchmark_dry_run": {
+    "envelope": {
+      "artifact_validation": "not_run",
+      "command": "benchmark",
+      "execution": "planned",
+      "exit_code": 0,
+      "quality_acceptance": "not_run",
+      "schema_version": 1
+    },
+    "error_type": "NoneType",
+    "keys": [
+      "artifact_validation",
+      "command",
+      "error",
+      "execution",
+      "exit_code",
+      "quality_acceptance",
+      "result",
+      "schema_version"
+    ],
+    "process_exit": 0,
+    "result_shape": {
+      "config": {
+        "benchmark": {
+          "generation": {
+            "do_sample": "scalar",
+            "max_new_tokens": "scalar",
+            "num_beams": "scalar"
+          },
+          "suite": "scalar",
+          "suites": [
+            "scalar"
+          ],
+          "thinking": "scalar",
+          "warmup": "scalar"
+        },
+        "calibration": {
+          "allow_dataset_fallback": "scalar",
+          "checkpoint_interval": "scalar",
+          "dataset": "scalar",
+          "dataset_revision": "scalar",
+          "enabled": "scalar",
+          "hard_fraction": "scalar",
+          "held_out_ratio": "scalar",
+          "init_from": "scalar",
+          "loss": "scalar",
+          "lr": "scalar",
+          "method": "scalar",
+          "num_samples": "scalar",
+          "optimizer": "scalar",
+          "seed": "scalar",
+          "seq_len": "scalar",
+          "steps": "scalar",
+          "temperature_end": "scalar",
+          "temperature_schedule": "scalar",
+          "temperature_start": "scalar",
+          "threshold_enabled": "scalar",
+          "threshold_eps": "scalar",
+          "threshold_estimator": "scalar",
+          "threshold_granularity": "scalar",
+          "threshold_init_ratio": "scalar",
+          "threshold_lr": "scalar",
+          "threshold_ste_width": "scalar",
+          "window": "scalar",
+          "zero_logit_bias": "scalar"
+        },
+        "device": "scalar",
+        "dtype": "scalar",
+        "model": {
+          "adapter": "scalar",
+          "component": "scalar",
+          "id": "scalar",
+          "revision": "scalar"
+        },
+        "output": "scalar",
+        "quantization": {
+          "activation_dtype": "scalar",
+          "backend": "scalar",
+          "backend_options": {},
+          "codebook": [
+            "scalar"
+          ],
+          "group_size": "scalar",
+          "grouping_scheme": "scalar",
+          "method": "scalar",
+          "mixed_precision": {},
+          "passes": [],
+          "scale_granularity": "scalar",
+          "scheme": "scalar",
+          "target": {
+            "attention": "scalar",
+            "mlp": "scalar"
+          },
+          "weight_dtype": "scalar"
+        },
+        "runtime": {
+          "low_vram": "scalar",
+          "microbatch": {
+            "auto": "scalar",
+            "min_size": "scalar"
+          },
+          "vram": {
+            "max_fraction": "scalar",
+            "min_free_mb": "scalar",
+            "reserve_mb": "scalar"
+          }
+        },
+        "schema_version": "scalar",
+        "seed": "scalar"
+      },
+      "status": "scalar"
+    }
+  },
+  "cache_list_empty": {
+    "envelope": {
+      "artifact_validation": "not_run",
+      "command": "list",
+      "execution": "completed",
+      "exit_code": 0,
+      "quality_acceptance": "not_run",
+      "schema_version": 1
+    },
+    "error_type": "NoneType",
+    "keys": [
+      "artifact_validation",
+      "command",
+      "error",
+      "execution",
+      "exit_code",
+      "quality_acceptance",
+      "result",
+      "schema_version"
+    ],
+    "process_exit": 0,
+    "result_shape": {
+      "artifacts": []
+    }
+  },
+  "calibrate_dry_run": {
+    "envelope": {
+      "artifact_validation": "not_run",
+      "command": "calibrate",
+      "execution": "planned",
+      "exit_code": 0,
+      "quality_acceptance": "not_run",
+      "schema_version": 1
+    },
+    "error_type": "NoneType",
+    "keys": [
+      "artifact_validation",
+      "command",
+      "error",
+      "execution",
+      "exit_code",
+      "quality_acceptance",
+      "result",
+      "schema_version"
+    ],
+    "process_exit": 0,
+    "result_shape": {
+      "config": {
+        "benchmark": {
+          "generation": {
+            "do_sample": "scalar",
+            "max_new_tokens": "scalar",
+            "num_beams": "scalar"
+          },
+          "suite": "scalar",
+          "suites": [
+            "scalar"
+          ],
+          "thinking": "scalar",
+          "warmup": "scalar"
+        },
+        "calibration": {
+          "allow_dataset_fallback": "scalar",
+          "checkpoint_interval": "scalar",
+          "dataset": "scalar",
+          "dataset_revision": "scalar",
+          "enabled": "scalar",
+          "hard_fraction": "scalar",
+          "held_out_ratio": "scalar",
+          "init_from": "scalar",
+          "loss": "scalar",
+          "lr": "scalar",
+          "method": "scalar",
+          "num_samples": "scalar",
+          "optimizer": "scalar",
+          "seed": "scalar",
+          "seq_len": "scalar",
+          "steps": "scalar",
+          "temperature_end": "scalar",
+          "temperature_schedule": "scalar",
+          "temperature_start": "scalar",
+          "threshold_enabled": "scalar",
+          "threshold_eps": "scalar",
+          "threshold_estimator": "scalar",
+          "threshold_granularity": "scalar",
+          "threshold_init_ratio": "scalar",
+          "threshold_lr": "scalar",
+          "threshold_ste_width": "scalar",
+          "window": "scalar",
+          "zero_logit_bias": "scalar"
+        },
+        "device": "scalar",
+        "dtype": "scalar",
+        "model": {
+          "adapter": "scalar",
+          "component": "scalar",
+          "id": "scalar",
+          "revision": "scalar"
+        },
+        "output": "scalar",
+        "quantization": {
+          "activation_dtype": "scalar",
+          "backend": "scalar",
+          "backend_options": {},
+          "codebook": [
+            "scalar"
+          ],
+          "group_size": "scalar",
+          "grouping_scheme": "scalar",
+          "method": "scalar",
+          "mixed_precision": {},
+          "passes": [],
+          "scale_granularity": "scalar",
+          "scheme": "scalar",
+          "target": {
+            "attention": "scalar",
+            "mlp": "scalar"
+          },
+          "weight_dtype": "scalar"
+        },
+        "runtime": {
+          "low_vram": "scalar",
+          "microbatch": {
+            "auto": "scalar",
+            "min_size": "scalar"
+          },
+          "vram": {
+            "max_fraction": "scalar",
+            "min_free_mb": "scalar",
+            "reserve_mb": "scalar"
+          }
+        },
+        "schema_version": "scalar",
+        "seed": "scalar"
+      },
+      "status": "scalar"
+    }
+  },
+  "compare_without_runs": {
+    "envelope": {
+      "artifact_validation": "not_run",
+      "command": "compare",
+      "execution": "failed",
+      "exit_code": 2,
+      "quality_acceptance": "not_run",
+      "schema_version": 1
+    },
+    "error_type": "str",
+    "keys": [
+      "artifact_validation",
+      "command",
+      "error",
+      "execution",
+      "exit_code",
+      "quality_acceptance",
+      "result",
+      "schema_version"
+    ],
+    "process_exit": 2,
+    "result_shape": {}
+  },
+  "doctor": {
+    "envelope": {
+      "artifact_validation": "not_run",
+      "command": "doctor",
+      "execution": "completed",
+      "exit_code": 0,
+      "quality_acceptance": "not_run",
+      "schema_version": 1
+    },
+    "error_type": "NoneType",
+    "keys": [
+      "artifact_validation",
+      "command",
+      "error",
+      "execution",
+      "exit_code",
+      "quality_acceptance",
+      "result",
+      "schema_version"
+    ],
+    "process_exit": 0,
+    "result_shape": {
+      "backends": [
+        {
+          "api_version": "scalar",
+          "distribution": "scalar",
+          "evidence": "scalar",
+          "formats": [
+            "scalar"
+          ],
+          "implementation": "scalar",
+          "installation": "scalar",
+          "name": "scalar",
+          "native_kernel": "scalar",
+          "operations": {
+            "convert": "scalar",
+            "model_reload": "scalar",
+            "native_low_bit_execution": "scalar",
+            "save": "scalar",
+            "tensor_reload": "scalar"
+          },
+          "quality": "scalar",
+          "required_version": "scalar",
+          "schemes": [
+            "scalar"
+          ],
+          "version": "scalar",
+          "weight_dtypes": [
+            "scalar"
+          ]
+        }
+      ],
+      "changes": [],
+      "dependencies": "opaque",
+      "hardware": "scalar",
+      "model_validation": "scalar",
+      "platform": "scalar",
+      "python": "scalar",
+      "schema_version": "scalar"
+    }
+  },
+  "inspect_dry_run": {
+    "envelope": {
+      "artifact_validation": "not_run",
+      "command": "inspect",
+      "execution": "planned",
+      "exit_code": 0,
+      "quality_acceptance": "not_run",
+      "schema_version": 1
+    },
+    "error_type": "NoneType",
+    "keys": [
+      "artifact_validation",
+      "command",
+      "error",
+      "execution",
+      "exit_code",
+      "quality_acceptance",
+      "result",
+      "schema_version"
+    ],
+    "process_exit": 0,
+    "result_shape": {
+      "config": {
+        "benchmark": {
+          "generation": {
+            "do_sample": "scalar",
+            "max_new_tokens": "scalar",
+            "num_beams": "scalar"
+          },
+          "suite": "scalar",
+          "suites": [
+            "scalar"
+          ],
+          "thinking": "scalar",
+          "warmup": "scalar"
+        },
+        "calibration": {
+          "allow_dataset_fallback": "scalar",
+          "checkpoint_interval": "scalar",
+          "dataset": "scalar",
+          "dataset_revision": "scalar",
+          "enabled": "scalar",
+          "hard_fraction": "scalar",
+          "held_out_ratio": "scalar",
+          "init_from": "scalar",
+          "loss": "scalar",
+          "lr": "scalar",
+          "method": "scalar",
+          "num_samples": "scalar",
+          "optimizer": "scalar",
+          "seed": "scalar",
+          "seq_len": "scalar",
+          "steps": "scalar",
+          "temperature_end": "scalar",
+          "temperature_schedule": "scalar",
+          "temperature_start": "scalar",
+          "threshold_enabled": "scalar",
+          "threshold_eps": "scalar",
+          "threshold_estimator": "scalar",
+          "threshold_granularity": "scalar",
+          "threshold_init_ratio": "scalar",
+          "threshold_lr": "scalar",
+          "threshold_ste_width": "scalar",
+          "window": "scalar",
+          "zero_logit_bias": "scalar"
+        },
+        "device": "scalar",
+        "dtype": "scalar",
+        "model": {
+          "adapter": "scalar",
+          "component": "scalar",
+          "id": "scalar",
+          "revision": "scalar"
+        },
+        "output": "scalar",
+        "quantization": {
+          "activation_dtype": "scalar",
+          "backend": "scalar",
+          "backend_options": {},
+          "codebook": [
+            "scalar"
+          ],
+          "group_size": "scalar",
+          "grouping_scheme": "scalar",
+          "method": "scalar",
+          "mixed_precision": {},
+          "passes": [],
+          "scale_granularity": "scalar",
+          "scheme": "scalar",
+          "target": {
+            "attention": "scalar",
+            "mlp": "scalar"
+          },
+          "weight_dtype": "scalar"
+        },
+        "runtime": {
+          "low_vram": "scalar",
+          "microbatch": {
+            "auto": "scalar",
+            "min_size": "scalar"
+          },
+          "vram": {
+            "max_fraction": "scalar",
+            "min_free_mb": "scalar",
+            "reserve_mb": "scalar"
+          }
+        },
+        "schema_version": "scalar",
+        "seed": "scalar"
+      },
+      "status": "scalar"
+    }
+  },
+  "plan_default": {
+    "envelope": {
+      "artifact_validation": "not_run",
+      "command": "plan",
+      "execution": "planned",
+      "exit_code": 0,
+      "quality_acceptance": "not_run",
+      "schema_version": 1
+    },
+    "error_type": "NoneType",
+    "keys": [
+      "artifact_validation",
+      "command",
+      "error",
+      "execution",
+      "exit_code",
+      "quality_acceptance",
+      "result",
+      "schema_version"
+    ],
+    "process_exit": 0,
+    "result_shape": {
+      "actual_device": "scalar",
+      "actual_dtype": "scalar",
+      "adapter": "scalar",
+      "artifact_validation": "scalar",
+      "backend": {
+        "api_version": "scalar",
+        "distribution": "scalar",
+        "evidence": "scalar",
+        "formats": [
+          "scalar"
+        ],
+        "implementation": "scalar",
+        "installation": "scalar",
+        "name": "scalar",
+        "native_kernel": "scalar",
+        "operations": {
+          "convert": "scalar",
+          "model_reload": "scalar",
+          "native_low_bit_execution": "scalar",
+          "save": "scalar",
+          "tensor_reload": "scalar"
+        },
+        "quality": "scalar",
+        "required_version": "scalar",
+        "schemes": [
+          "scalar"
+        ],
+        "version": "scalar",
+        "weight_dtypes": [
+          "scalar"
+        ]
+      },
+      "components": [],
+      "config": {
+        "benchmark": {
+          "generation": {
+            "do_sample": "scalar",
+            "max_new_tokens": "scalar",
+            "num_beams": "scalar"
+          },
+          "suite": "scalar",
+          "suites": [
+            "scalar"
+          ],
+          "thinking": "scalar",
+          "warmup": "scalar"
+        },
+        "calibration": {
+          "allow_dataset_fallback": "scalar",
+          "checkpoint_interval": "scalar",
+          "dataset": "scalar",
+          "dataset_revision": "scalar",
+          "enabled": "scalar",
+          "hard_fraction": "scalar",
+          "held_out_ratio": "scalar",
+          "init_from": "scalar",
+          "loss": "scalar",
+          "lr": "scalar",
+          "method": "scalar",
+          "num_samples": "scalar",
+          "optimizer": "scalar",
+          "seed": "scalar",
+          "seq_len": "scalar",
+          "steps": "scalar",
+          "temperature_end": "scalar",
+          "temperature_schedule": "scalar",
+          "temperature_start": "scalar",
+          "threshold_enabled": "scalar",
+          "threshold_eps": "scalar",
+          "threshold_estimator": "scalar",
+          "threshold_granularity": "scalar",
+          "threshold_init_ratio": "scalar",
+          "threshold_lr": "scalar",
+          "threshold_ste_width": "scalar",
+          "window": "scalar",
+          "zero_logit_bias": "scalar"
+        },
+        "device": "scalar",
+        "dtype": "scalar",
+        "model": {
+          "adapter": "scalar",
+          "component": "scalar",
+          "id": "scalar",
+          "revision": "scalar"
+        },
+        "output": "scalar",
+        "quantization": {
+          "activation_dtype": "scalar",
+          "backend": "scalar",
+          "backend_options": {},
+          "codebook": [
+            "scalar"
+          ],
+          "group_size": "scalar",
+          "grouping_scheme": "scalar",
+          "method": "scalar",
+          "mixed_precision": {},
+          "passes": [],
+          "scale_granularity": "scalar",
+          "scheme": "scalar",
+          "target": {
+            "attention": "scalar",
+            "mlp": "scalar"
+          },
+          "weight_dtype": "scalar"
+        },
+        "runtime": {
+          "low_vram": "scalar",
+          "microbatch": {
+            "auto": "scalar",
+            "min_size": "scalar"
+          },
+          "vram": {
+            "max_fraction": "scalar",
+            "min_free_mb": "scalar",
+            "reserve_mb": "scalar"
+          }
+        },
+        "schema_version": "scalar",
+        "seed": "scalar"
+      },
+      "execution": "scalar",
+      "operation": "scalar",
+      "passes": [],
+      "quality_acceptance": "scalar",
+      "schema_version": "scalar",
+      "side_effects": [],
+      "status": "scalar",
+      "target_count": "scalar",
+      "targets": [],
+      "unknown": [
+        "scalar"
+      ]
+    }
+  },
+  "plugins": {
+    "envelope": {
+      "artifact_validation": "not_run",
+      "command": "plugins",
+      "execution": "completed",
+      "exit_code": 0,
+      "quality_acceptance": "not_run",
+      "schema_version": 1
+    },
+    "error_type": "NoneType",
+    "keys": [
+      "artifact_validation",
+      "command",
+      "error",
+      "execution",
+      "exit_code",
+      "quality_acceptance",
+      "result",
+      "schema_version"
+    ],
+    "process_exit": 0,
+    "result_shape": {
+      "plugins": "opaque"
+    }
+  },
+  "quality_dry_run_missing_profile": {
+    "envelope": {
+      "artifact_validation": "not_run",
+      "command": "quality",
+      "execution": "failed",
+      "exit_code": 2,
+      "quality_acceptance": "not_run",
+      "schema_version": 1
+    },
+    "error_type": "str",
+    "keys": [
+      "artifact_validation",
+      "command",
+      "error",
+      "execution",
+      "exit_code",
+      "quality_acceptance",
+      "result",
+      "schema_version"
+    ],
+    "process_exit": 2,
+    "result_shape": {
+      "config": {
+        "benchmark": {
+          "generation": {
+            "do_sample": "scalar",
+            "max_new_tokens": "scalar",
+            "num_beams": "scalar"
+          },
+          "suite": "scalar",
+          "suites": [
+            "scalar"
+          ],
+          "thinking": "scalar",
+          "warmup": "scalar"
+        },
+        "calibration": {
+          "allow_dataset_fallback": "scalar",
+          "checkpoint_interval": "scalar",
+          "dataset": "scalar",
+          "dataset_revision": "scalar",
+          "enabled": "scalar",
+          "hard_fraction": "scalar",
+          "held_out_ratio": "scalar",
+          "init_from": "scalar",
+          "loss": "scalar",
+          "lr": "scalar",
+          "method": "scalar",
+          "num_samples": "scalar",
+          "optimizer": "scalar",
+          "seed": "scalar",
+          "seq_len": "scalar",
+          "steps": "scalar",
+          "temperature_end": "scalar",
+          "temperature_schedule": "scalar",
+          "temperature_start": "scalar",
+          "threshold_enabled": "scalar",
+          "threshold_eps": "scalar",
+          "threshold_estimator": "scalar",
+          "threshold_granularity": "scalar",
+          "threshold_init_ratio": "scalar",
+          "threshold_lr": "scalar",
+          "threshold_ste_width": "scalar",
+          "window": "scalar",
+          "zero_logit_bias": "scalar"
+        },
+        "device": "scalar",
+        "dtype": "scalar",
+        "model": {
+          "adapter": "scalar",
+          "component": "scalar",
+          "id": "scalar",
+          "revision": "scalar"
+        },
+        "output": "scalar",
+        "quantization": {
+          "activation_dtype": "scalar",
+          "backend": "scalar",
+          "backend_options": {},
+          "codebook": [
+            "scalar"
+          ],
+          "group_size": "scalar",
+          "grouping_scheme": "scalar",
+          "method": "scalar",
+          "mixed_precision": {},
+          "passes": [],
+          "scale_granularity": "scalar",
+          "scheme": "scalar",
+          "target": {
+            "attention": "scalar",
+            "mlp": "scalar"
+          },
+          "weight_dtype": "scalar"
+        },
+        "runtime": {
+          "low_vram": "scalar",
+          "microbatch": {
+            "auto": "scalar",
+            "min_size": "scalar"
+          },
+          "vram": {
+            "max_fraction": "scalar",
+            "min_free_mb": "scalar",
+            "reserve_mb": "scalar"
+          }
+        },
+        "schema_version": "scalar",
+        "seed": "scalar"
+      },
+      "status": "scalar"
+    }
+  },
+  "quantize_dry_run": {
+    "envelope": {
+      "artifact_validation": "not_run",
+      "command": "quantize",
+      "execution": "planned",
+      "exit_code": 0,
+      "quality_acceptance": "not_run",
+      "schema_version": 1
+    },
+    "error_type": "NoneType",
+    "keys": [
+      "artifact_validation",
+      "command",
+      "error",
+      "execution",
+      "exit_code",
+      "quality_acceptance",
+      "result",
+      "schema_version"
+    ],
+    "process_exit": 0,
+    "result_shape": {
+      "actual_device": "scalar",
+      "actual_dtype": "scalar",
+      "adapter": "scalar",
+      "artifact_validation": "scalar",
+      "backend": {
+        "api_version": "scalar",
+        "distribution": "scalar",
+        "evidence": "scalar",
+        "formats": [
+          "scalar"
+        ],
+        "implementation": "scalar",
+        "installation": "scalar",
+        "name": "scalar",
+        "native_kernel": "scalar",
+        "operations": {
+          "convert": "scalar",
+          "model_reload": "scalar",
+          "native_low_bit_execution": "scalar",
+          "save": "scalar",
+          "tensor_reload": "scalar"
+        },
+        "quality": "scalar",
+        "required_version": "scalar",
+        "schemes": [
+          "scalar"
+        ],
+        "version": "scalar",
+        "weight_dtypes": [
+          "scalar"
+        ]
+      },
+      "components": [],
+      "config": {
+        "benchmark": {
+          "generation": {
+            "do_sample": "scalar",
+            "max_new_tokens": "scalar",
+            "num_beams": "scalar"
+          },
+          "suite": "scalar",
+          "suites": [
+            "scalar"
+          ],
+          "thinking": "scalar",
+          "warmup": "scalar"
+        },
+        "calibration": {
+          "allow_dataset_fallback": "scalar",
+          "checkpoint_interval": "scalar",
+          "dataset": "scalar",
+          "dataset_revision": "scalar",
+          "enabled": "scalar",
+          "hard_fraction": "scalar",
+          "held_out_ratio": "scalar",
+          "init_from": "scalar",
+          "loss": "scalar",
+          "lr": "scalar",
+          "method": "scalar",
+          "num_samples": "scalar",
+          "optimizer": "scalar",
+          "seed": "scalar",
+          "seq_len": "scalar",
+          "steps": "scalar",
+          "temperature_end": "scalar",
+          "temperature_schedule": "scalar",
+          "temperature_start": "scalar",
+          "threshold_enabled": "scalar",
+          "threshold_eps": "scalar",
+          "threshold_estimator": "scalar",
+          "threshold_granularity": "scalar",
+          "threshold_init_ratio": "scalar",
+          "threshold_lr": "scalar",
+          "threshold_ste_width": "scalar",
+          "window": "scalar",
+          "zero_logit_bias": "scalar"
+        },
+        "device": "scalar",
+        "dtype": "scalar",
+        "model": {
+          "adapter": "scalar",
+          "component": "scalar",
+          "id": "scalar",
+          "revision": "scalar"
+        },
+        "output": "scalar",
+        "quantization": {
+          "activation_dtype": "scalar",
+          "backend": "scalar",
+          "backend_options": {},
+          "codebook": [
+            "scalar"
+          ],
+          "group_size": "scalar",
+          "grouping_scheme": "scalar",
+          "method": "scalar",
+          "mixed_precision": {},
+          "passes": [],
+          "scale_granularity": "scalar",
+          "scheme": "scalar",
+          "target": {
+            "attention": "scalar",
+            "mlp": "scalar"
+          },
+          "weight_dtype": "scalar"
+        },
+        "runtime": {
+          "low_vram": "scalar",
+          "microbatch": {
+            "auto": "scalar",
+            "min_size": "scalar"
+          },
+          "vram": {
+            "max_fraction": "scalar",
+            "min_free_mb": "scalar",
+            "reserve_mb": "scalar"
+          }
+        },
+        "schema_version": "scalar",
+        "seed": "scalar"
+      },
+      "execution": "scalar",
+      "operation": "scalar",
+      "passes": [],
+      "quality_acceptance": "scalar",
+      "schema_version": "scalar",
+      "side_effects": [],
+      "status": "scalar",
+      "target_count": "scalar",
+      "targets": [],
+      "unknown": [
+        "scalar"
+      ]
+    }
+  },
+  "unknown_option": {
+    "envelope": {
+      "artifact_validation": "not_run",
+      "command": "quantize",
+      "execution": "failed",
+      "exit_code": 2,
+      "quality_acceptance": "not_run",
+      "schema_version": 1
+    },
+    "error_type": "str",
+    "keys": [
+      "artifact_validation",
+      "command",
+      "error",
+      "execution",
+      "exit_code",
+      "quality_acceptance",
+      "result",
+      "schema_version"
+    ],
+    "process_exit": 2,
+    "result_shape": {}
+  }
+}
