@@ -1,29 +1,74 @@
-"""OpenTernary brand assets: palette, 3D ANSI-Shadow wordmark, and the mitsudomoe mark.
+"""OpenTernary brand: Yoru palette, 3D ANSI-Shadow wordmark, and the interlaced mitsudomoe mark.
 
-The mark is a procedural mitsudomoe (三つ巴): three commas for the three ternary
-states {-1, 0, +1}. It is rendered with Braille dots so it scales to any cell grid
-and needs no image support in the terminal. Draft for design review.
+The mark (style A, 組紐三つ巴) is a geometric rebuild baked by ``scripts/design/bake_mark.py``
+into ``assets/tomoe_a.otmk``: Braille frames of the mark rotating counter-clockwise, each band
+in its own rainbow hue family (three bands = the three ternary states). Loading needs only the
+standard library, so no numerical dependency is added to the core install.
 """
 
 from __future__ import annotations
 
 import math
+import struct
+import zlib
+from dataclasses import dataclass
 from functools import lru_cache
+from importlib import resources
 
 from rich.style import Style
 from rich.text import Text
 
-# --- palette (draft; derived from the lab mark: champagne gold, copper, ink) ---------
-INK = "#0b0b0c"
-CHAMPAGNE = "#f0e4cc"
-GOLD = "#e2c28a"
-BRONZE = "#8a7350"
-COPPER = "#c65a3a"
-EMBER = "#ffd9a0"
-ASH = "#6e6a63"
+# --- Yoru (夜) palette: WCAG AA for every foreground on BG, CVD-checked status colours ---
+BG = "#090c1c"
+SURFACE = "#121627"
+BORDER = "#272c46"
+TEXT = "#e9ebf3"
+MUTED = "#949cc2"
+ACCENT = "#b89ffe"
+OK = "#40e5e5"
+WARN = "#f0ba59"
+ERR = "#f2725b"
+INFO = "#8bc3fc"
 
-# trit -> colour. +1 gold, 0 champagne, -1 copper (same order as the mark's commas)
-TRIT = {1: GOLD, 0: CHAMPAGNE, -1: COPPER}
+PALETTE = {
+    "bg": BG,
+    "surface": SURFACE,
+    "border": BORDER,
+    "text": TEXT,
+    "muted": MUTED,
+    "accent": ACCENT,
+    "ok": OK,
+    "warn": WARN,
+    "err": ERR,
+    "info": INFO,
+}
+
+HUE0 = 25.0  # hue (OKLCH degrees) at the head of band 0; band k starts at HUE0 + 120 k
+BAND_SPAN = 75.0  # hue range inside one band; the 45 degree gap keeps the three bands distinct
+
+
+def oklch(lightness: float, chroma: float, hue: float) -> str:
+    """OKLCH -> sRGB hex, reducing chroma until the colour is inside the sRGB gamut."""
+    h = math.radians(hue)
+    for _ in range(40):
+        a, b = chroma * math.cos(h), chroma * math.sin(h)
+        l_ = lightness + 0.3963377774 * a + 0.2158037573 * b
+        m_ = lightness - 0.1055613458 * a - 0.0638541728 * b
+        s_ = lightness - 0.0894841775 * a - 1.2914855480 * b
+        lin = (
+            4.0767416621 * l_**3 - 3.3077115913 * m_**3 + 0.2309699292 * s_**3,
+            -1.2684380046 * l_**3 + 2.6097574011 * m_**3 - 0.3413193965 * s_**3,
+            -0.0041960863 * l_**3 - 0.7034186147 * m_**3 + 1.7076147010 * s_**3,
+        )
+        if all(-1e-4 <= c <= 1 + 1e-4 for c in lin):
+            break
+        chroma *= 0.95
+    rgb = (12.92 * c if c <= 0.0031308 else 1.055 * max(c, 0.0) ** (1 / 2.4) - 0.055 for c in lin)
+    return "#" + "".join(f"{round(min(max(c, 0.0), 1.0) * 255):02x}" for c in rgb)
+
+
+# trit -> representative colour of its band (middle of the band's hue family)
+TRIT = {t: oklch(0.74, 0.19, HUE0 + 120 * k + BAND_SPAN / 2) for k, t in enumerate((1, 0, -1))}
 
 WORDMARK = (
     " ██████╗ ██████╗ ███████╗███╗   ██╗   ████████╗███████╗██████╗ ███╗   ██╗ █████╗ ██████╗ ██╗   ██╗",
@@ -36,33 +81,23 @@ WORDMARK = (
 WORDMARK_WIDTH = max(len(line) for line in WORDMARK)
 
 
-def _hex(c: str) -> tuple[int, int, int]:
-    return int(c[1:3], 16), int(c[3:5], 16), int(c[5:7], 16)
-
-
-def _mix(a: str, b: str, t: float) -> str:
-    (r1, g1, b1), (r2, g2, b2) = _hex(a), _hex(b)
-    return "#{:02x}{:02x}{:02x}".format(*(round(x + (y - x) * t) for x, y in ((r1, r2), (g1, g2), (b1, b2))))
-
-
-def _gradient(t: float) -> str:
-    """champagne -> gold -> copper across the wordmark."""
-    return _mix(CHAMPAGNE, GOLD, t * 2) if t < 0.5 else _mix(GOLD, COPPER, (t - 0.5) * 2)
+@lru_cache(maxsize=1)
+def _wordmark_gradient() -> tuple[str, ...]:
+    return tuple(oklch(0.82, 0.15, HUE0 + 330 * i / (WORDMARK_WIDTH - 1)) for i in range(WORDMARK_WIDTH))
 
 
 def wordmark() -> Text:
-    """Faces (█) carry the metallic gradient; strokes (╔═╝) are the extruded shadow."""
+    """Faces (█) carry the rainbow; strokes (╔═╝) are the extruded shadow in the border colour."""
+    grad = _wordmark_gradient()
     out = Text(no_wrap=True, overflow="crop")
     for row, line in enumerate(WORDMARK):
         for col, ch in enumerate(line):
             if ch == " ":
                 out.append(ch)
-                continue
-            t = col / (WORDMARK_WIDTH - 1)
-            if ch == "█":
-                out.append(ch, Style(color=_gradient(t), bold=True))
+            elif ch == "█":
+                out.append(ch, Style(color=grad[col], bold=True))
             else:
-                out.append(ch, Style(color=_mix(BRONZE, COPPER, t) if row < 5 else BRONZE))
+                out.append(ch, Style(color=MUTED if row < 5 else BORDER))
         if row < len(WORDMARK) - 1:
             out.append("\n")
     return out
@@ -70,84 +105,75 @@ def wordmark() -> Text:
 
 def compact_wordmark() -> Text:
     """Narrow-terminal fallback (< ~100 columns)."""
+    grad = _wordmark_gradient()
     out = Text(no_wrap=True)
-    out.append("◐ ", Style(color=COPPER))
     for i, ch in enumerate("OPEN-TERNARY"):
-        out.append(ch, Style(color=_gradient(i / 11), bold=True))
-    return out
-
-
-# --- mitsudomoe ---------------------------------------------------------------------
-_A, _H, _TIP, _SWEEP = 0.40, 0.25, 0.93, math.radians(205)
-_ORBIT = (math.cos(math.radians(38)), math.sin(math.radians(38)))
-
-
-def _sample(x: float, y: float) -> int | None:
-    """Comma index 0..2, 3 = outer ring, 4 = orbit dot, None = empty. Domain [-1, 1]^2."""
-    r = math.hypot(x, y)
-    phi = math.atan2(y, x)
-    for k in range(3):
-        th = 2 * math.pi * k / 3 + math.pi / 2
-        if (x - _A * math.cos(th)) ** 2 + (y - _A * math.sin(th)) ** 2 <= _H * _H:
-            return k
-        d = (th - phi) % (2 * math.pi)
-        if d <= _SWEEP:
-            t = d / _SWEEP
-            outer = (_A + _H) + (_TIP - (_A + _H)) * math.sin(t * math.pi / 2)
-            inner = _A + (_TIP - _A) * t**0.75
-            if inner <= r <= outer:
-                return k
-    if (x - _ORBIT[0]) ** 2 + (y - _ORBIT[1]) ** 2 <= 0.07**2:
-        return 4
-    if 0.975 <= r <= 1.03:
-        return 3
-    return None
-
-
-_BRAILLE = ((0x01, 0x08), (0x02, 0x10), (0x04, 0x20), (0x40, 0x80))  # [row][col]
-_COMMA_COLOUR = {0: TRIT[1], 1: TRIT[0], 2: TRIT[-1], 3: BRONZE, 4: EMBER}
-
-
-@lru_cache(maxsize=8)
-def _mark_cells(cols: int) -> tuple[tuple[tuple[str, int | None], ...], ...]:
-    rows = cols // 2  # terminal cells are ~1:2, braille dots are then ~square
-    dw, dh = cols * 2, rows * 4
-    margin = 1.06
-    grid: list[tuple[tuple[str, int | None], ...]] = []
-    for cy in range(rows):
-        line: list[tuple[str, int | None]] = []
-        for cx in range(cols):
-            bits, votes = 0, [0] * 5
-            for py in range(4):
-                for px in range(2):
-                    x = ((cx * 2 + px + 0.5) / dw * 2 - 1) * margin
-                    y = (1 - (cy * 4 + py + 0.5) / dh * 2) * margin
-                    s = _sample(x, y)
-                    if s is not None:
-                        bits |= _BRAILLE[py][px]
-                        votes[s] += 1
-            if bits:
-                # comma/orbit dots win ties over the ring so silhouettes stay crisp
-                owner = max((i for i in range(5) if votes[i]), key=lambda i: votes[i] + (0 if i == 3 else 0.5))
-                line.append((chr(0x2800 + bits), owner))
-            else:
-                line.append((" ", None))
-        grid.append(tuple(line))
-    return tuple(grid)
-
-
-def mark(cols: int = 26) -> Text:
-    """Mitsudomoe mark, `cols` cells wide and cols/2 rows tall."""
-    out = Text(no_wrap=True)
-    cells = _mark_cells(cols)
-    for i, line in enumerate(cells):
-        for ch, owner in line:
-            out.append(ch, Style(color=_COMMA_COLOUR[owner]) if owner is not None else None)
-        if i < len(cells) - 1:
-            out.append("\n")
+        out.append(ch, Style(color=grad[round(i / 11 * (WORDMARK_WIDTH - 1))], bold=True))
     return out
 
 
 def banner(width: int) -> Text:
     """Hero banner sized to the terminal: full 3D wordmark when it fits."""
     return wordmark() if width >= WORDMARK_WIDTH + 2 else compact_wordmark()
+
+
+# --- baked mark -------------------------------------------------------------------------
+@dataclass(frozen=True)
+class MarkAsset:
+    frames: int
+    palette: tuple[tuple[str, int], ...]  # (hex colour, band)
+    sizes: dict[int, tuple[int, list[bytes]]]  # cols -> (rows, per-frame cell bytes)
+
+
+@lru_cache(maxsize=1)
+def load_mark() -> MarkAsset:
+    raw = zlib.decompress(resources.files("openternary.ui").joinpath("assets/tomoe_a.otmk").read_bytes())
+    if raw[:4] != b"OTMK" or raw[4] != 1:
+        raise ValueError("unsupported mark asset")
+    frames, n_sizes, n_pal = raw[5], raw[6], raw[7]
+    pos = 8
+    palette = []
+    for _ in range(n_pal):
+        r, g, b, band = struct.unpack_from("BBBB", raw, pos)
+        palette.append((f"#{r:02x}{g:02x}{b:02x}", band))
+        pos += 4
+    sizes: dict[int, tuple[int, list[bytes]]] = {}
+    for _ in range(n_sizes):
+        cols, rows = raw[pos], raw[pos + 1]
+        pos += 2
+        step = rows * cols * 2
+        sizes[cols] = (rows, [raw[pos + f * step : pos + (f + 1) * step] for f in range(frames)])
+        pos += frames * step
+    return MarkAsset(frames, tuple(palette), sizes)
+
+
+MARK_SIZES = (16, 24, 30)
+
+
+def _best_size(cols: int) -> int:
+    fitting = [c for c in MARK_SIZES if c <= cols]
+    return max(fitting) if fitting else min(MARK_SIZES)
+
+
+@lru_cache(maxsize=256)
+def mark(cols: int = 30, frame: int = 0) -> Text:
+    """The mark at the largest baked size <= ``cols``; ``frame`` rotates it counter-clockwise."""
+    asset = load_mark()
+    size = _best_size(cols)
+    rows, frames = asset.sizes[size]
+    cells = frames[frame % asset.frames]
+    out = Text(no_wrap=True)
+    for cy in range(rows):
+        for cx in range(size):
+            bits, idx = cells[(cy * size + cx) * 2], cells[(cy * size + cx) * 2 + 1]
+            if idx == 255:
+                out.append(" ")
+            else:
+                out.append(chr(0x2800 + bits), Style(color=asset.palette[idx][0]))
+        if cy < rows - 1:
+            out.append("\n")
+    return out
+
+
+def mark_frame_count() -> int:
+    return load_mark().frames

@@ -1,8 +1,9 @@
-"""Brand assets render deterministically and degrade on narrow / colourless terminals."""
+"""Brand assets: deterministic, degrade on narrow / colourless terminals, mark rotates CCW."""
 
 from __future__ import annotations
 
 import io
+import math
 
 from rich.console import Console
 
@@ -26,22 +27,66 @@ def test_wordmark_is_rectangular_and_fits_100_columns() -> None:
 
 
 def test_banner_falls_back_to_compact_on_narrow_terminals() -> None:
-    assert brand.banner(80).plain.endswith("OPEN-TERNARY")
+    assert brand.banner(80).plain == "OPEN-TERNARY"
     assert brand.banner(120).plain.splitlines()[0] == brand.WORDMARK[0]
 
 
-def test_mark_dimensions_and_symmetry() -> None:
-    for cols in (16, 26, 30):
+def test_oklch_matches_reference_values() -> None:
+    assert brand.oklch(1.0, 0.0, 0.0) == "#ffffff"
+    assert brand.oklch(0.0, 0.0, 0.0) == "#000000"
+    # chroma is reduced into gamut instead of clipping channels
+    assert brand.oklch(0.74, 0.40, 140.0).startswith("#")
+
+
+def test_mark_sizes_are_square_braille() -> None:
+    for cols in brand.MARK_SIZES:
         lines = brand.mark(cols).plain.splitlines()
         assert len(lines) == cols // 2
         assert all(len(line) == cols for line in lines)
         assert all(ch == " " or 0x2800 <= ord(ch) <= 0x28FF for line in lines for ch in line)
+    assert brand.mark(200).plain == brand.mark(30).plain  # largest baked size
+    assert brand.mark(10).plain == brand.mark(16).plain  # smallest baked size
 
 
-def test_mark_uses_all_three_trit_colours() -> None:
-    styles = {str(span.style) for span in brand.mark(26).spans}
-    for colour in brand.TRIT.values():
-        assert any(colour in s for s in styles), colour
+def test_palette_keeps_three_band_families() -> None:
+    asset = brand.load_mark()
+    assert {band for _, band in asset.palette} == {0, 1, 2}
+
+
+def _band_centroid_angle(frame: int, band: int, cols: int = 30) -> float:
+    asset = brand.load_mark()
+    rows, frames = asset.sizes[cols]
+    cells = frames[frame]
+    xs, ys = [], []
+    for cy in range(rows):
+        for cx in range(cols):
+            idx = cells[(cy * cols + cx) * 2 + 1]
+            if idx != 255 and asset.palette[idx][1] == band:
+                xs.append(cx - (cols - 1) / 2)
+                ys.append((cy - (rows - 1) / 2) * 2)  # cells are ~1:2
+    # screen y grows downwards, so flip it: a positive angle step is counter-clockwise
+    return math.degrees(math.atan2(-sum(ys) / len(ys), sum(xs) / len(xs)))
+
+
+def test_mark_rotates_counter_clockwise() -> None:
+    n = brand.mark_frame_count()
+    assert n == 48
+    step = 360 / n
+    # cell-level centroids jitter by a few degrees, so compare over 120 degrees
+    for band in range(3):
+        angles = [_band_centroid_angle(f, band) for f in range(0, 17, 4)]
+        steps = [(b - a + 180) % 360 - 180 for a, b in zip(angles, angles[1:], strict=False)]
+        assert all(d > 0 for d in steps), (band, steps)  # always counter-clockwise
+        assert abs(sum(steps) - 16 * step) < 12, (band, sum(steps))
+
+
+def test_mark_has_threefold_symmetry_in_shape() -> None:
+    """A 120 degree turn reproduces the dot pattern (colours move to the next band)."""
+    asset = brand.load_mark()
+    rows, frames = asset.sizes[30]
+    third = asset.frames // 3
+    same = sum(frames[0][i] == frames[third][i] for i in range(0, len(frames[0]), 2))
+    assert same / (rows * 30) > 0.9
 
 
 def test_no_color_strips_colour_but_keeps_shape() -> None:
@@ -54,3 +99,19 @@ def test_piped_output_is_plain_text() -> None:
     out = render(brand.banner(120), 120, color=False)
     assert "\x1b[" not in out
     assert out.splitlines()[0].rstrip() == brand.WORDMARK[0].rstrip()
+
+
+def test_trit_colours_are_distinct() -> None:
+    assert len(set(brand.TRIT.values())) == 3
+
+
+def test_splash_prints_static_frame_without_tty() -> None:
+    from openternary.ui import splash
+
+    buf = io.StringIO()
+    console = Console(file=buf, width=120)  # not a terminal -> reduced motion
+    assert splash.reduced_motion(console)
+    splash.play(seconds=0.1, console=console)
+    out = buf.getvalue()
+    assert "\x1b[" not in out and "OpenTernary" in out
+    assert out.count("\n") >= len(brand.WORDMARK) + 15
