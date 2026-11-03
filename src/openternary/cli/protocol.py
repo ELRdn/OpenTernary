@@ -86,7 +86,8 @@ def print_error(code: int, error: str, context: str | None, failure_type: str | 
 
         from openternary.ui.render import error_panel
 
-        Console(stderr=True).print(error_panel(code, error, context, failure_type))
+        console = Console(stderr=True)
+        console.print(error_panel(code, error, context, failure_type), width=min(console.width, 110))
     except Exception:
         typer.echo(f"{context}: {error}" if context and context != error else error, err=True)
 

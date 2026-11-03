@@ -90,6 +90,7 @@ def doctor(result: dict[str, Any]) -> RenderableType:
         title=Text(t("doctor.title"), style=f"bold {brand.ACCENT}"),
         title_align="left",
         border_style=brand.BORDER,
+        expand=False,
     )
 
 
@@ -121,6 +122,7 @@ def plan(result: dict[str, Any]) -> RenderableType:
         title=Text(t("plan.title"), style=f"bold {brand.ACCENT}"),
         title_align="left",
         border_style=brand.BORDER,
+        expand=False,
     )
 
 

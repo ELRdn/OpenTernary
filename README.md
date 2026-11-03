@@ -50,11 +50,11 @@ openternary doctor --json
 `uv sync` だけではコマンドはリポジトリ内の `.venv` にしか入らないため、`uv run openternary ...` で呼ぶか、仮想環境を有効化する（Windows: `.venv\Scripts\Activate.ps1`、macOS/Linux: `source .venv/bin/activate`）。どのフォルダからでも `openternary` と打てるようにするには、リポジトリのフォルダで次を実行する。
 
 ```bash
-uv tool install --editable .
+uv tool install --editable . --python 3.12
 uv tool update-shell
 ```
 
-`uv tool update-shell` は初回だけ必要で、実行後にターミナルを開き直す。`--editable` なので `git pull` した変更はそのまま反映される。依存パッケージが増えた更新のあとは `uv tool install --editable . --reinstall` を実行する。Windowsはコマンド名の大文字小文字を区別しないため `OpenTernary` でも動く。
+`uv tool update-shell` は初回だけ必要で、実行後にターミナルを開き直す。`--python 3.12` を付けないと、uvはPCにある最新のPythonを選ぶことがある（CIで検証しているのは3.11と3.12）。このコマンドで入るのは本体だけなので、量子化・校正には `uv run openternary ...`（`uv sync --extra ml --extra calibration` 済みの `.venv`）を使うか、`uv tool install --editable ".[ml,calibration]" --python 3.12 --reinstall` で機械学習の依存ごと入れる。`--editable` なので `git pull` した変更はそのまま反映される。依存パッケージが増えた更新のあとは `uv tool install --editable . --reinstall` を実行する。Windowsはコマンド名の大文字小文字を区別しないため `OpenTernary` でも動く。
 
 `--json` を付けると、結果のJSON 1行だけがstdoutに出て、人間向けの表示はstderrに回る。ターミナルでは両方が見えるので2回出たように見えるが、`> result.json` のようにリダイレクトすると1行だけが保存される。
 
