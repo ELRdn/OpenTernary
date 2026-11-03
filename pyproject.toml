@@ -17,6 +17,7 @@ dependencies = [
     "filelock>=3",
     "huggingface-hub>=0.23",
     "packaging>=23",
+    "textual>=8.2",
 ]
 
 [project.optional-dependencies]
@@ -35,7 +36,7 @@ torchao = ["torchao==0.18.0"]
 diffusion = ["diffusers==0.40.0"]
 
 [project.scripts]
-openternary = "openternary.cli.main:app"
+openternary = "openternary.cli.main:run"
 
 [project.urls]
 Repository = "https://github.com/ELRdn/OpenTernary"

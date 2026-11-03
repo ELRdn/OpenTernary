@@ -196,6 +196,23 @@ openternary optimize "D:/models/example" --search-space space.json --quality-pro
 
 全候補不合格は`no_feasible_candidate`、予算停止は`budget_exhausted`。どちらもbestを公開しない。容量は100ms間隔で監視するため、その間の一時超過余地がある。CPU以外のworkerはwall timeを保守的なGPU時間として算入する。deviceのピーク値や品質の実測検証は次段階。
 
+## 全画面インターフェース（TUI）
+
+```bash
+openternary            # ターミナルで引数なし → TUI
+openternary ui         # 明示して開く（--runs で実行結果フォルダを指定、既定は runs）
+```
+
+- 開くのは対話できるターミナル（stdin・stdoutともTTY）のときだけ。パイプ・CI（`CI`環境変数）・`TERM=dumb`・`OPENTERNARY_NO_TUI=1`では、引数なしは従来どおりhelpを表示して終了コード2。`openternary ui`は終了コード2で理由を表示する。
+- タブ: ホーム（版・更新・PyTorch・直近の実行）／実行結果（`runs/`の一覧と詳細、`x`で削除、`b`/`c`で比較の基準・候補に設定）／ジョブ（実行中・過去のジョブ、段階ごとの進捗・ETA・stderr、`k`で中止）／比較／診断（`doctor`の表、実機確認、PyTorch導入）／更新。数字キー`1`〜`6`で切り替え、`n`で新しいジョブ、`q`で終了。
+- **重い処理はTUIの中で実行しない。** ジョブは通常のCLIを子プロセスで起動する: `python -m openternary <コマンド> … --json --events-jsonl <ジョブの記録先>/events.jsonl`。終了コード・JSON・run lock・`last_failure.json`はスクリプトから使う場合と同一で、メモリ不足で子が落ちてもTUIは巻き込まれない。
+- 新しいジョブのフォームはCLIの定義（Typerのコマンドと引数）から自動生成する。`--json`・`--events-jsonl`・`--quiet`・`--dry-run`・`--yes`はTUIが扱うので表示しない。
+- 開始前に計画画面で、実行するコマンド行と、そのコマンド自身の`--dry-run`の出力を表示する。dry-runが失敗した場合は開始できない。`setup`・`update`は、この画面で開始することが`--yes`の代わりになる。
+- 削除は名前の入力で確認する: 実行結果フォルダ（`runs/`直下の実行フォルダだけ。別プロセスが`.execution.lock`を持つ実行は拒否）と、`cache remove --execute`（対象の名前）。
+- 中止: 1回目は割り込み（POSIXはプロセスグループへSIGINT、WindowsはCtrl+Breakを送り、子は`KeyboardInterrupt`として扱う）。コマンドは安全に止まり終了コード130、失敗はrunに記録される。2回目は子プロセスごと強制停止（記録は残らない）。
+- ジョブの記録は`%LOCALAPPDATA%\openternary\jobs`（Windows）、`$XDG_STATE_HOME/openternary/jobs`（既定`~/.local/state/…`）。`OPENTERNARY_STATE_DIR`で変更できる。TUIを閉じてもジョブは続き、開き直すと監視を再開する（Linux/macOS）。Windowsでは、ターミナルのウィンドウを閉じると、そのコンソールで動くジョブも止まる。
+- 動きを止める: `OPENTERNARY_REDUCED_MOTION=1`または`NO_MOTION=1`で三つ巴の回転を止める。更新確認は`OPENTERNARY_NO_UPDATE_CHECK=1`で止まる（キャッシュは1日）。
+
 ## 人間向けの表示・言語
 
 `--json`を付けない場合、`doctor`・`backends`・`plan`・`plugins`などは表で表示する（以前は整形したJSONをそのまま表示していた。機械処理には`--json`を使う）。状態は記号＋語で示し、色は記号だけに付ける（✔ 受入・合格、● 導入済み/完了、◐ 未検証、▲ 実験的・注意、○ 未実行・未導入、– 非対応、✖ 失敗）。`completed`（処理完了）は品質合格ではないため成功色にしない。
@@ -273,6 +290,8 @@ run作成後の失敗はmetricsへ理由を残す。初期metadata作成途中�
 | `cache-info` | 維持。管理artifact操作は`cache list/remove`へ分離 |
 | `doctor`等の通常表示がJSON | 表で表示。機械処理は`--json` |
 | エラーが2回表示される | 1回のパネル表示に統一 |
+| ターミナルで引数なしの`openternary`はhelp（終了コード2） | TUIを開く。パイプ・CI・`OPENTERNARY_NO_TUI=1`では従来どおりhelp |
+| console scriptの入口`openternary.cli.main:app` | `openternary.cli.main:run`（`app`はそのまま使える） |
 
 ## Python API・plugin
 
