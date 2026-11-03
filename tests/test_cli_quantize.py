@@ -81,3 +81,21 @@ def test_cli_quantize_per_tensor_and_per_group() -> None:
 def test_cli_quantize_cache_miss_exit_2() -> None:
     result = runner.invoke(app, ["quantize", "nonexistent/model-id-xyz-9999"])
     assert result.exit_code == 2
+
+
+def test_cli_quantize_emits_tensor_and_hash_progress(tmp_path: pathlib.Path) -> None:
+    src = _make_src(tmp_path)
+    events = tmp_path / "events.jsonl"
+    result = runner.invoke(
+        app, ["quantize", str(src), "--output", str(tmp_path / "out"), "--events-jsonl", str(events)]
+    )
+    assert result.exit_code == 0, result.output
+    rows = [json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()]
+    stages = [r["stage"] for r in rows]
+    assert stages[0] == "started" and stages[-1] == "completed"
+    assert stages.index("run_created") < stages.index("convert.tensors") < stages.index("convert.hash")
+    tensors = [r for r in rows if r["stage"] == "convert.tensors"]
+    assert tensors[0]["completed"] == 0 and tensors[-1]["completed"] == tensors[-1]["total"] == 3
+    assert all(r["unit"] == "tensor" for r in tensors)
+    assert [r["elapsed_s"] for r in rows] == sorted(r["elapsed_s"] for r in rows)
+    assert {r["run_id"] for r in rows[stages.index("run_created") :]} == {rows[-1]["run_id"]}

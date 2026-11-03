@@ -10,6 +10,7 @@ from typing import Any
 
 from openternary.experiment.metadata import write_json
 from openternary.services.artifacts import MANIFEST, member_path
+from openternary.services.reporting import progress
 
 
 def _copy_interface(source: Path, destination: Path) -> None:
@@ -97,7 +98,9 @@ def pack_snapshot(source: Path, destination: Path) -> None:
     with SnapshotReader(source) as reader:
         if set(reader.keys()) != set(targets):
             raise ValueError("quantization report and payload inventory differ")
-        for index, name in enumerate(reader.keys()):
+        names = list(reader.keys())
+        for index, name in enumerate(names):
+            progress("export.tensors", index, len(names), unit="tensor", tensor=name)
             tensor = reader.get_tensor(name)
             entry = targets[name]
             filename = f"tensors/{index:06d}.safetensors"
@@ -155,6 +158,7 @@ def unpack_snapshot(source: Path, destination: Path) -> None:
     _copy_interface(source, destination)
     weight_map = {}
     for index, row in enumerate(rows):
+        progress("export.tensors", index, len(rows), unit="tensor")
         if not isinstance(row, dict) or not isinstance(row.get("name"), str) or row["name"] in weight_map:
             raise ValueError("invalid or duplicate packed tensor")
         payload = load_file(str(member_path(source, row["file"])))

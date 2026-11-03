@@ -100,6 +100,9 @@ class ResourceMeter:
 
 
 def phase(name: str, device: str) -> None:
+    from openternary.services.reporting import milestone
+
+    milestone("phase", name=name, device=device)
     meter = _current.get()
     if meter is not None:
         meter.begin(name, device)

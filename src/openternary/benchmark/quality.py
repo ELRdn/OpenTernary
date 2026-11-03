@@ -13,6 +13,8 @@ import unicodedata
 from collections.abc import Iterable
 from typing import Any
 
+from openternary.services.reporting import progress
+
 _MINHASH_PERMUTATIONS = 128
 _MINHASH_THRESHOLD = 0.9
 _SHINGLE_WIDTH = 5
@@ -229,7 +231,8 @@ def evaluate_quality(
     languages = sorted({item["language"] for item in splits[split]})
     if any(not language for language in languages):
         raise ValueError("language labels must not be empty")
-    for language in languages:
+    for language_index, language in enumerate(languages):
+        progress("quality.perplexity", language_index, len(languages), unit="language", language=language)
         sequences = (
             tokenizer(item["text"], return_tensors="pt", padding=False, truncation=False)["input_ids"][0]
             for item in splits[split]
@@ -238,6 +241,7 @@ def evaluate_quality(
         by_language[language] = evaluate_perplexity(
             model, sequences, max_length=max_length, stride=stride, device=device
         )
+    progress("quality.perplexity", len(languages), len(languages), unit="language")
     total_tokens = sum(result["scored_tokens"] for result in by_language.values())
     total_nll = sum(result["nll_sum"] for result in by_language.values())
     mean_nll = total_nll / total_tokens

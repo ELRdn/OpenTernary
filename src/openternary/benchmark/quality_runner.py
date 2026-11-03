@@ -20,6 +20,7 @@ from openternary.benchmark.quality import (
 )
 from openternary.config.schema import AppConfig
 from openternary.services.identity import snapshot_identity
+from openternary.services.reporting import progress
 from openternary.services.resources import measured, phase
 
 
@@ -177,7 +178,8 @@ def run_quality_benchmark(
         "max_new_tokens": generation.max_new_tokens,
     }
     responses: dict[str, str] = {}
-    for case in cases:
+    for case_index, case in enumerate(cases):
+        progress("quality.cases", case_index, len(cases), unit="case", case=case["id"])
         result = _run_single_prompt(
             processor=processor,
             model=model,

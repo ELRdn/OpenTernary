@@ -13,6 +13,7 @@ from openternary.experiment.metadata import write_json
 from openternary.services.artifacts import canonical_hash, file_hash, validate_artifact
 from openternary.services.errors import CapabilityError
 from openternary.services.identity import snapshot_identity
+from openternary.services.reporting import progress
 from openternary.services.resources import measured, phase
 
 
@@ -128,6 +129,7 @@ def evaluate_diffusion(
         if profile.warmup:
             generate(0)
         for index, prompt in enumerate(profile.prompts):
+            progress("diffusion.prompts", index, len(profile.prompts), unit="prompt")
             if device.startswith("cuda"):
                 torch.cuda.synchronize()
             started = time.perf_counter()
