@@ -141,7 +141,14 @@ class PlanScreen(ModalScreen[bool]):
                 yield Input(placeholder=self.typed, id="typed")
             with Horizontal(classes="buttons"):
                 yield Button(t("tui.back"), id="back")
-                yield Button(t("tui.start"), id="start", variant="error" if self.typed else "primary")
+                # Disabled from the start: enabled only once the dry run (and the typed name) allow it,
+                # so no click can slip in before the plan has been checked.
+                yield Button(
+                    t("tui.start"),
+                    id="start",
+                    variant="error" if self.typed else "primary",
+                    disabled=not self.preview_ok or bool(self.typed),
+                )
 
     def on_mount(self) -> None:
         self._sync()

@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -106,10 +107,20 @@ def app_factory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):  # type: ignor
 def run(app: OpenTernaryApp, scenario: Any) -> None:
     async def main() -> None:
         async with app.run_test(size=(130, 40)) as pilot:
-            await pilot.pause(0.5)
+            await until(pilot, lambda: app.summary.get("runs") is not None)  # first load finished
             await scenario(app, pilot)
 
     asyncio.run(main())
+
+
+async def until(pilot: Any, condition: Any, timeout: float = 15.0) -> None:
+    """Wait for a UI state instead of a fixed sleep: screen changes, worker results and child
+    processes take longer on busy CI runners (Windows especially)."""
+    deadline = time.monotonic() + timeout
+    while not condition():
+        if time.monotonic() > deadline:
+            raise AssertionError("UI did not reach the expected state in time")
+        await pilot.pause(0.05)
 
 
 def test_number_keys_switch_tabs_and_focus_the_list(app_factory: Any) -> None:
@@ -118,11 +129,9 @@ def test_number_keys_switch_tabs_and_focus_the_list(app_factory: Any) -> None:
         assert tabs.active == "home"
         for key, name in zip("234561", ("runs", "jobs", "compare", "doctor", "update", "home"), strict=True):
             await pilot.press(key)
-            await pilot.pause(0.1)
-            assert tabs.active == name
+            await until(pilot, lambda name=name: tabs.active == name)
         await pilot.press("2")
-        await pilot.pause(0.1)
-        assert app.focused is app.query_one("#runs-table")
+        await until(pilot, lambda: app.focused is app.query_one("#runs-table"))
 
     run(app_factory(), scenario)
 
@@ -132,25 +141,24 @@ def test_deleting_a_run_needs_its_exact_name(app_factory: Any, tmp_path: Path) -
 
     async def scenario(app: OpenTernaryApp, pilot: Any) -> None:
         await pilot.press("2")
-        await pilot.pause(0.5)
+        await until(pilot, lambda: app.focused is app.query_one("#runs-table"))
         assert app.query_one("#runs-table", DataTable).row_count == 1
         await pilot.press("x")
-        await pilot.pause(0.2)
-        assert isinstance(app.screen, TypedConfirm)
+        await until(pilot, lambda: isinstance(app.screen, TypedConfirm) and bool(app.screen.query("#delete")))
         delete = app.screen.query_one("#delete", Button)
         app.screen.query_one("#typed", Input).value = "2026-11-03"
         await pilot.pause(0.1)
         assert delete.disabled
         await pilot.press("escape")
-        await pilot.pause(0.2)
+        await until(pilot, lambda: not isinstance(app.screen, TypedConfirm))
         assert run_dir.exists()  # backing out deletes nothing
         await pilot.press("x")
-        await pilot.pause(0.2)
+        await until(pilot, lambda: isinstance(app.screen, TypedConfirm) and bool(app.screen.query("#typed")))
         app.screen.query_one("#typed", Input).value = "2026-11-03_demo"
-        await pilot.pause(0.1)
-        await pilot.click("#delete")
-        await pilot.pause(0.5)
-        assert not run_dir.exists()
+        delete = app.screen.query_one("#delete", Button)
+        await until(pilot, lambda: not delete.disabled)
+        delete.press()
+        await until(pilot, lambda: not run_dir.exists())
 
     run(app_factory(), scenario)
 
@@ -158,19 +166,18 @@ def test_deleting_a_run_needs_its_exact_name(app_factory: Any, tmp_path: Path) -
 def test_form_plan_and_start_launch_a_job(app_factory: Any) -> None:
     async def scenario(app: OpenTernaryApp, pilot: Any) -> None:
         await pilot.press("n")
-        await pilot.pause(0.5)
-        assert isinstance(app.screen, JobForm)
+        await until(pilot, lambda: isinstance(app.screen, JobForm) and bool(app.screen.query("#f-config")))
         app.screen.query_one("#f-config", Input).value = "configs/gemma4-e2b.yaml"
-        await pilot.click("#review")
-        await pilot.pause(0.3)
-        assert isinstance(app.screen, PlanScreen) and app.screen.args == [
-            "inspect",
-            "--config",
-            "configs/gemma4-e2b.yaml",
-        ]
-        await pilot.click("#start")  # inspect has no --dry-run, so Start is available at once
-        await pilot.pause(0.5)
-        assert app.query_one("#tabs", TabbedContent).active == "jobs"
+        app.screen.query_one("#review", Button).press()
+        await until(pilot, lambda: isinstance(app.screen, PlanScreen) and bool(app.screen.query("#start")))
+        plan = app.screen
+        assert isinstance(plan, PlanScreen) and plan.args == ["inspect", "--config", "configs/gemma4-e2b.yaml"]
+        start = plan.query_one("#start", Button)
+        assert start.disabled  # never clickable before the command's own --dry-run has answered
+        await until(pilot, lambda: not start.disabled, timeout=60)
+        assert "dry-run" in str(plan.query_one("#preview").render())
+        start.press()
+        await until(pilot, lambda: app.query_one("#tabs", TabbedContent).active == "jobs")
         (job,) = app_factory.manager.jobs()
         assert job.args == ["inspect", "--config", "configs/gemma4-e2b.yaml"] and job.status == "running"
 
@@ -181,12 +188,9 @@ def test_start_stays_disabled_when_the_dry_run_fails(app_factory: Any) -> None:
     async def scenario(app: OpenTernaryApp, pilot: Any) -> None:
         screen = PlanScreen(catalog.spec("quantize"), ["quantize", "--config", "configs/missing.yaml"])
         app.push_screen(screen)
-        await pilot.pause(0.2)
+        await until(pilot, lambda: app.screen is screen and bool(screen.query("#start")))  # mounted, not just pushed
         assert screen.query_one("#start", Button).disabled  # until the preview has answered
-        for _ in range(100):
-            await pilot.pause(0.1)
-            if "exit" in str(screen.query_one("#preview").render()):
-                break
+        await until(pilot, lambda: "exit" in str(screen.query_one("#preview").render()), timeout=60)
         assert screen.query_one("#start", Button).disabled
 
     run(app_factory(), scenario)
@@ -195,12 +199,10 @@ def test_start_stays_disabled_when_the_dry_run_fails(app_factory: Any) -> None:
 def test_quitting_with_a_running_job_asks_first(app_factory: Any) -> None:
     async def scenario(app: OpenTernaryApp, pilot: Any) -> None:
         job = app.start_job(["calibrate"])
-        await pilot.pause(0.3)
         await pilot.press("q")
-        await pilot.pause(0.2)
-        assert isinstance(app.screen, Choice)
-        await pilot.click("#back")
-        await pilot.pause(0.2)
+        await until(pilot, lambda: isinstance(app.screen, Choice) and bool(app.screen.query("#back")))
+        app.screen.query_one("#back", Button).press()
+        await until(pilot, lambda: not isinstance(app.screen, Choice))
         assert app.is_running and app_factory.manager.refresh(job).status == "running"
 
     run(app_factory(), scenario)

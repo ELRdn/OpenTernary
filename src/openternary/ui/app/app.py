@@ -562,8 +562,8 @@ class OpenTernaryApp(App[None]):
     def _tab_activated(self, event: TabbedContent.TabActivated) -> None:
         """Put the keyboard on the tab's main list so its keys (delete, cancel, …) work at once."""
         target = {"runs": "#runs-table", "jobs": "#jobs-table"}.get(event.pane.id or "")
-        if target:
-            self.query_one(target).focus()
+        for widget in self.query(target) if target else ():  # absent while the app shuts down
+            widget.focus()
 
     @on(Button.Pressed, "#home-new")
     def action_new_job(self) -> None:
@@ -579,7 +579,8 @@ class OpenTernaryApp(App[None]):
 
     # home summary
     def _home(self) -> None:
-        self.query_one(Home).show(self.summary)
+        for home in self.query(Home):  # results can land while the app is closing
+            home.show(self.summary)
 
     # runs
     @work(thread=True, exclusive=True, group="runs")
@@ -588,6 +589,8 @@ class OpenTernaryApp(App[None]):
         self.call_from_thread(self._show_runs, runs)
 
     def _show_runs(self, runs: list[runsvc.RunInfo]) -> None:
+        if not self.query(Runs):  # closing
+            return
         self.run_list = runs
         self.query_one(Runs).show(self.runs_root, runs)
         self.query_one(Compare).show(runs)
@@ -617,6 +620,8 @@ class OpenTernaryApp(App[None]):
 
     # jobs
     def refresh_jobs(self) -> None:
+        if not self.query(Jobs):  # closing
+            return
         jobs = self.manager.jobs()
         self.query_one(Jobs).show(jobs)
         running = [job for job in jobs if job.status == "running"]
@@ -692,7 +697,8 @@ class OpenTernaryApp(App[None]):
         self.call_from_thread(self._show_doctor, render.doctor(result), line)
 
     def _show_doctor(self, renderable: RenderableType, torch: RenderableType) -> None:
-        self.query_one(Doctor).show(renderable)
+        for pane in self.query(Doctor):  # absent while closing
+            pane.show(renderable)
         self.summary["torch"] = torch
         self._home()
 
@@ -730,7 +736,8 @@ class OpenTernaryApp(App[None]):
         if plan.commands:
             parts += [Text(""), Text(t("update.steps"), style="bold")]
             parts += [Text("  " + " ".join(cmd), style=brand.ACCENT) for cmd in plan.commands]
-        self.query_one(Update).show(Group(*parts), bool(status.update_available and plan.automatic))
+        for pane in self.query(Update):  # absent while closing
+            pane.show(Group(*parts), bool(status.update_available and plan.automatic))
         self.summary["update"] = state
         self._home()
 
