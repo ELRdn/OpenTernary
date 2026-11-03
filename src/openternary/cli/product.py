@@ -70,8 +70,14 @@ def doctor(
     device: Annotated[str, typer.Option("--device")] = "cpu",
 ) -> None:
     """Read installed package metadata; never install, repair, or execute a model."""
+    import os
+
     from openternary.services.planning import doctor as service_doctor
 
+    if console.is_terminal and not os.environ.get("OPENTERNARY_NO_UPDATE_CHECK"):
+        from openternary.services import update as upd
+
+        upd.check(fetch=lambda: upd.fetch_pypi_json(timeout=3.0))  # cached for a day; failures are silent
     result = service_doctor()
     if probe_runtime:
         from openternary.services.errors import HardwareError

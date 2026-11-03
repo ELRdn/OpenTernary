@@ -1,6 +1,6 @@
 [project]
 name = "openternary"
-version = "0.1.0a0"
+version = "0.1.0a1"
 description = "Open-source tooling for researching ternary LLMs (Gemma 4 E2B first target)"
 readme = "README.md"
 requires-python = ">=3.11"

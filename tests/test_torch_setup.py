@@ -407,3 +407,15 @@ def test_cancel_shows_a_human_message() -> None:
     console.print(error_panel(130, "Abort", None, "Abort"))
     out = console.file.getvalue()
     assert "Abort" not in out and ("Cancelled" in out or "中断" in out)
+
+
+def test_cli_restore_reads_a_saved_profile_file(offline: dict[str, Any], tmp_path: Path) -> None:
+    """`openternary update` hands the record over in a file because the upgrade may rebuild the env."""
+    candidate = ts.Candidate("amd", "rocm", "2.13.0+rocm10.0.0", "rocm10.0.0", "https://idx", "0.28.0+rocm10.0.0")
+    plan = ts.make_plan(candidate, [], "uv", python="py", backend="rocm")
+    saved = tmp_path / "saved.json"
+    ts.write_profile(plan, windows(RX9070XT), {"status": "passed"}, saved)
+    env = envelope(CliRunner().invoke(app, ["setup", "--restore", "--profile", str(saved), "--yes", "--json"]))
+    assert env["exit_code"] == 0 and offline["install"] == 1
+    assert env["result"]["plan"]["candidate"]["version"] == "2.13.0+rocm10.0.0"
+    assert (tmp_path / ts.PROFILE).is_file()  # the record is written back into the environment

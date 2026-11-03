@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from typing import Annotated, Any
 
 import typer
@@ -28,6 +29,9 @@ def setup(
     restore: Annotated[
         bool, typer.Option("--restore", help="Reinstall exactly the build recorded by the last setup")
     ] = False,
+    profile_file: Annotated[
+        str | None, typer.Option("--profile", help="With --restore: read the record from this file")
+    ] = None,
     pre: Annotated[bool, typer.Option("--pre", help="Include pre-release builds")] = False,
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Install without asking")] = False,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Show the plan; install nothing")] = False,
@@ -46,7 +50,7 @@ def setup(
     want = ts.wanted_backend(host, backend)
     requirements, minimum = ts.openternary_requirements()
     if restore:
-        recorded = ts.read_profile()
+        recorded = ts.read_profile(Path(profile_file) if profile_file else None)
         if recorded is None:
             explain(t("setup.no_profile"))
             raise FileNotFoundError(str(ts.profile_path()))

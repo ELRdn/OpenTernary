@@ -1,0 +1,110 @@
+name: Release
+
+# Publishing uses PyPI Trusted Publishing (OIDC): no API token is stored in the repository.
+# - push a tag vX.Y.Z[aN|bN|rcN] that matches pyproject.toml -> PyPI (environment "pypi")
+# - run manually (Actions > Release > Run workflow)          -> TestPyPI (environment "testpypi")
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.12"
+          version: "0.12.5"
+
+      - name: Check that the versions agree (pyproject, __init__, tag)
+        id: version
+        run: |
+          version=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
+          init=$(python3 -c "import re; print(re.search(r'__version__ = \"([^\"]+)\"', open('src/openternary/__init__.py').read()).group(1))")
+          if [ "$version" != "$init" ]; then echo "pyproject.toml $version != __init__.py $init"; exit 1; fi
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "tag $GITHUB_REF_NAME does not match v$version"; exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - run: uv sync --locked
+
+      - name: Core-only tests
+        run: >-
+          uv run --frozen pytest -q
+          tests/test_cli_product.py tests/test_cli_help.py tests/test_cli_json_contract.py
+          tests/test_cli_presentation.py tests/test_progress_events.py tests/test_torch_setup.py
+          tests/test_update.py tests/test_ui_brand.py tests/test_artifact_product.py
+
+      - run: uv build
+
+      - name: Check the built distributions
+        run: uvx twine check --strict dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish-testpypi:
+    if: github.event_name == 'workflow_dispatch'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/openternary
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  publish-pypi:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/openternary
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    needs: [build, publish-pypi]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=""
+          if [[ "$GITHUB_REF_NAME" =~ (a|b|rc)[0-9]+$ ]]; then flags="--prerelease"; fi
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" \
+            --title "OpenTernary $GITHUB_REF_NAME" --generate-notes $flags

@@ -1,6 +1,6 @@
 # OpenTernary TUI / UX 設計
 
-2026-11-03 / status: draft (P1〜P3・setup実装済み。setupはオーナーPCでの実機確認待ち。次はP4)
+2026-11-03 / status: draft (P1〜P4実装済み。setupはWindows+RX 9070 XTで実機確認済み。次は初回リリースとP5)
 
 ## 目的
 
@@ -126,7 +126,7 @@ OKLCHで明度・彩度を固定し、色相だけを回す（HSVの虹と違い
 | P1 ✅ | `--json`契約の固定（14プローブ）、ブランド部品 | golden一致・CI登録 |
 | P2 ✅ | 長時間処理の構造化イベント（追加のみ、schema_version 1のまま）。一覧は`docs/CLI.md`の「JSON・終了コード」 | オーナー実機のsmoke runで欠落・順序乱れなし（下記）。ログとの時刻突合は`logs/`未入手のため未実施 |
 | P3 ✅（オーナー確認待ち） | theme（記号のみ着色）・i18n（`OPENTERNARY_LANG`）・helpの3パネル化と内部用語除去・`doctor`/`backends`/`plan`/`plugins`の表表示・エラーの1回パネル化 | golden差分ゼロ（確認済み）、見た目をオーナー承認 |
-| P4 | タグ運用・リリースworkflow・`update`（確認→計画→実行→検証→ロールバック）・起動時の更新確認 | シナリオ表をすべて通過、torchの`pip freeze`が不変 |
+| P4 ✅（初回リリース待ち） | Apache-2.0、`0.1.0a1`、`release.yml`（Trusted Publishing、タグでPyPI・手動でTestPyPI）、`openternary update`（PyPI確認・1日キャッシュ・導入方法別の更新・setup構成の退避と復元・Windowsは手順表示）、`doctor`の更新通知 | タグ`v0.1.0a1`でPyPI公開、`update --check`が0.1.0a1を最新と表示 |
 | P5 | Textual App（Home / Runs / Job monitor / Compare / Doctor / Update） | Pilotテスト・snapshot・実機での監視 |
 | P6 | `docs/CLI.md`更新、移行表、Windows CI | DoD確認 |
 

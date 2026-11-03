@@ -82,6 +82,7 @@ def doctor(result: dict[str, Any]) -> RenderableType:
         ),
         Text.assemble((f"{t('doctor.model_validation')}: ", "bold"), badge(result.get("model_validation"))),
         *_torch_lines(),
+        *_update_lines(),
     ]
     probe = result.get("runtime_probe")
     if isinstance(probe, dict):
@@ -93,6 +94,15 @@ def doctor(result: dict[str, Any]) -> RenderableType:
         border_style=brand.BORDER,
         expand=False,
     )
+
+
+def _update_lines() -> list[RenderableType]:
+    from openternary.services.update import cached_notice
+
+    status = cached_notice()
+    if status is None or not status.update_available:
+        return []
+    return [Text.assemble(("▲ ", brand.WARN), t("update.notice", version=status.latest))]
 
 
 def _torch_lines() -> list[RenderableType]:
@@ -327,3 +337,38 @@ def setup_view(console: Console, result: dict[str, Any], plan: Any, limit: int) 
         if verification.get("reason"):
             console.print(Text(str(verification["reason"]), style="dim"))
         console.print(Text(f"{t('setup.profile')}: {result.get('profile')}", style="dim"))
+
+
+# --- update ---------------------------------------------------------------------------------------
+def update_view(console: Console, status: Any, plan: Any, restore: list[str] | None) -> None:
+    rows = _table(t("col.key"), t("col.value"))
+    rows.add_row(t("update.current"), status.current)
+    rows.add_row(t("update.latest"), _scalar(status.latest))
+    parts: list[RenderableType] = [rows]
+    if status.error:
+        parts.append(Text(str(status.error), style="dim"))
+    elif not status.published:
+        parts.append(Text.assemble(("○ ", brand.MUTED), t("update.not_published")))
+    elif status.update_available:
+        parts.append(Text.assemble(("▲ ", brand.WARN), t("update.available", version=status.latest)))
+    else:
+        parts.append(Text.assemble(("✔ ", brand.OK), t("update.up_to_date")))
+    if plan is not None:
+        parts.append(Text.assemble((f"{t('update.mode')}: ", "bold"), plan.mode))
+        if plan.reason:
+            parts.append(Text(t(f"update.manual.{plan.reason}"), style=brand.WARN))
+        parts.append(Text(t("update.steps"), style="bold"))
+        for index, command in enumerate(plan.commands, start=1):
+            parts.append(Text(f"  {index}. {' '.join(command)}"))
+        if restore:
+            parts.append(Text(f"  {len(plan.commands) + 1}. {' '.join(restore)}"))
+            parts.append(Text(f"     ({t('update.restore_step')})", style="dim"))
+    console.print(
+        Panel(
+            Group(*parts),
+            title=Text(t("update.title"), style=f"bold {brand.ACCENT}"),
+            title_align="left",
+            border_style=brand.BORDER,
+            expand=False,
+        )
+    )

@@ -1,6 +1,6 @@
 # OpenTernary CLI guide
 
-2026-09-23 / CLI・manifest schema 1 / package 0.1.0a0
+2026-09-23 / CLI・manifest schema 1 / package 0.1.0a1
 
 このガイドは現在の実装を説明する。実モデル・GPU・外部runtimeの受入状況は[検証表](CLI_IMPLEMENTATION_STATUS.md)、今後のGateは[CLIロードマップ](../CLI_ROADMAP.md)を参照。
 
@@ -62,6 +62,20 @@ openternary setup --restore       # 前回setupで入れた構成をそのまま
 - NVIDIAはドライバのCUDA上限以下のビルドだけを推奨する。AMDのカーネルは既定で`device-all`（`--amd-device gfxNNNN`で小さくできる）。
 - インストール後、新しいプロセスで`runtime_probe`（FP32/BF16の行列積）を実デバイスで実行し、結果と構成を`<環境>/openternary-torch.json`に記録する。失敗は終了コード5。`doctor`はこの記録と実際のtorchを並べて表示し、`uv sync`などで入れ替わっていれば`setup --restore`を案内する。
 - 対話端末以外と`--json`では、`--yes`がないとインストールしない（終了コード2）。
+
+## 更新（`update`）
+
+```text
+openternary update --check        # PyPIの最新版を確認するだけ
+openternary update --dry-run      # 実行する手順を表示
+openternary update                # 確認のうえ更新し、setupの構成を入れ直す
+```
+
+- 確認に使うネットワークはPyPIのJSON（`pypi.org/pypi/openternary/json`）だけ。結果は1日キャッシュする。`doctor`は対話端末のときだけ1日1回確認し、新しい版があれば表示する（`OPENTERNARY_NO_UPDATE_CHECK=1`で無効）。PyPI未公開（404）はエラーにしない。
+- インストール方法で手順が変わる: `uv tool`なら`uv tool upgrade openternary`、通常のvenvなら`uv pip install --upgrade openternary`、ソースからのeditable導入は自動では変更せず`git pull`を案内する。
+- 更新でツール環境が作り直されてもよいように、`setup`の記録を一時ファイルに退避し、更新後に`openternary setup --restore --profile <退避先> --yes`で同じPyTorchを入れ直す。
+- Windowsの`uv tool`導入では実行中の`openternary`を置き換えられないため、実行せずに手順を表示する。
+- 対話端末以外と`--json`では`--yes`がないと更新しない（終了コード2）。
 
 ## 計画と設定
 

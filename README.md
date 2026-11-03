@@ -15,6 +15,18 @@ Product planning: [CLI Product Roadmap](CLI_ROADMAP.md) covers CLI reliability, 
 
 ---
 
+## Install
+
+From PyPI (after the first release), as a command available everywhere:
+
+```bash
+uv tool install openternary --python 3.12
+openternary setup        # detect the GPU and install a matching PyTorch build
+openternary doctor
+```
+
+`openternary update` checks PyPI, upgrades, and reinstalls the PyTorch build that `openternary setup` recorded. On Windows it prints the commands to run from a new terminal, because a running `openternary` cannot replace itself.
+
 ## Quickstart (core CLI)
 
 **推奨: uv で再現可能な環境を構築**
