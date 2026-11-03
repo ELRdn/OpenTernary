@@ -1,6 +1,6 @@
 # OpenTernary TUI / UX 設計
 
-2026-11-03 / status: draft (P1〜P5実装済み。0.1.0a1をPyPIで公開済み。P5のTUIはオーナー実機での確認待ち)
+2026-11-03 / status: draft (P1〜P5実装済み。0.1.0a1をPyPIで公開済み、TUI入りの0.1.0a2を準備。TUIはオーナー実機での確認待ち)
 
 ## 目的
 

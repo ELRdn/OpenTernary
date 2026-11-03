@@ -20,8 +20,8 @@ Releases are published to PyPI by `.github/workflows/release.yml` with Trusted P
 3. Commit, merge to `main`, then tag that commit and push the tag:
 
    ```bash
-   git tag v0.1.0a1
-   git push origin v0.1.0a1
+   git tag v0.1.0a2
+   git push origin v0.1.0a2
    ```
 
 4. Approve the `pypi` environment in the Actions run. The workflow checks that the tag,
