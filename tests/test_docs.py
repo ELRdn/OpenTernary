@@ -50,7 +50,7 @@ def cli_sections(text: str) -> dict[str, str]:
 
 def test_both_languages_have_the_same_pages() -> None:
     def pages(lang: str) -> set[str]:
-        return {str(p.relative_to(CONTENT / lang)) for p in (CONTENT / lang).rglob("*.md")}
+        return {p.relative_to(CONTENT / lang).as_posix() for p in (CONTENT / lang).rglob("*.md")}
 
     assert pages("en") == pages("ja")
     nav = (ROOT / "mkdocs.yml").read_text(encoding="utf-8")
