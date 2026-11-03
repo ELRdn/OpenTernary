@@ -235,7 +235,8 @@ def offline(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
         ("pypi", "torchvision"): PYPI_VISION,
     }
     monkeypatch.setattr(hardware, "detect", lambda: windows(RX9070XT))
-    monkeypatch.setattr(ts, "list_wheels", lambda provider, package: listings[(provider, package)])
+    listings[("amd", "amd-torch-device-gfx1201")] = ["amd_torch_device_gfx1201-2.13.0-py3-none-any.whl"]
+    monkeypatch.setattr(ts, "list_wheels", lambda provider, package: listings.get((provider, package), []))
     monkeypatch.setattr(ts, "sys_tags", lambda: iter(WIN312))
     monkeypatch.setattr(ts, "find_uv", lambda: "uv")
     monkeypatch.setattr(ts, "profile_path", lambda: tmp_path / ts.PROFILE)
@@ -303,3 +304,66 @@ def test_cli_list_shows_everything_without_installing(offline: dict[str, Any]) -
     assert env["exit_code"] == 0 and offline["install"] == 0
     backends = {c["backend"] for c in env["result"]["candidates_all"]}
     assert {"rocm", "cuda", "cpu"} <= backends
+
+
+def test_owner_pc_discrete_card_first_and_no_warning_for_the_igpu(monkeypatch: pytest.MonkeyPatch) -> None:
+    """RX 9070 XT + Ryzen integrated graphics, as reported by `openternary setup --list` on the owner's PC."""
+    raw = json.dumps(
+        [
+            {
+                "Name": "AMD Radeon(TM) Graphics",
+                "PNPDeviceID": "PCI\\VEN_1002&DEV_13C0",
+                "DriverVersion": "32.0.21045.16010",
+            },
+            {
+                "Name": "AMD Radeon RX 9070 XT",
+                "PNPDeviceID": "PCI\\VEN_1002&DEV_7550",
+                "DriverVersion": "32.0.32015.7029",
+            },
+        ]
+    )
+    monkeypatch.setattr(hardware.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(hardware.shutil, "which", lambda name: None)
+    runner = lambda command: raw if command[0] in {"pwsh", "powershell"} else None  # noqa: E731
+    host = hardware.detect(runner)
+    assert [(g.name, g.arch, g.integrated) for g in host.gpus] == [
+        ("AMD Radeon RX 9070 XT", "gfx1201", False),
+        ("AMD Radeon(TM) Graphics", None, True),
+    ]
+    assert host.notes == []
+
+
+def test_amd_kernels_for_this_gpu_only_when_published() -> None:
+    published = lambda package: ["x.whl"] if package == "amd-torch-device-gfx1201" else []  # noqa: E731
+    assert ts.amd_device_extra("auto", "gfx1201", published) == "gfx1201"
+    assert ts.amd_device_extra("auto", "gfx1100", published) == "all"
+    assert ts.amd_device_extra("auto", None, published) == "all"
+    assert ts.amd_device_extra("gfx1200", "gfx1201", published) == "gfx1200"
+
+    def offline(package: str) -> list[str]:
+        raise OSError("unreachable")
+
+    assert ts.amd_device_extra("auto", "gfx1201", offline) == "all"
+
+
+def test_stable_torchvision_pairs_rank_above_prerelease_ones() -> None:
+    """Owner's AMD index: 2.14.0 ships with torchvision 0.29.0a0, 2.13.0 with 0.28.0."""
+    host = windows(RX9070XT)
+    torch = ["torch-2.14.0+rocm10.1.0-cp312-cp312-win_amd64.whl", "torch-2.13.0+rocm10.1.0-cp312-cp312-win_amd64.whl"]
+    vision = [
+        "torchvision-0.29.0a0+rocm10.1.0-cp312-cp312-win_amd64.whl",
+        "torchvision-0.28.0+rocm10.1.0-cp312-cp312-win_amd64.whl",
+    ]
+    offer = ts.build_offer(host, {"amd": torch}, supported=WIN312)
+    pool, _ = ts.rank(host, ts.with_torchvision(offer.candidates, {"amd": vision}, WIN312), "rocm")
+    assert [(c.version, c.torchvision) for c in pool] == [
+        ("2.13.0+rocm10.1.0", "0.28.0+rocm10.1.0"),
+        ("2.14.0+rocm10.1.0", "0.29.0a0+rocm10.1.0"),
+    ]
+
+
+def test_cli_plan_uses_the_per_gpu_amd_kernels(offline: dict[str, Any]) -> None:
+    env = envelope(CliRunner().invoke(app, ["setup", "--dry-run", "--json"]))
+    command = env["result"]["plan"]["command"]
+    assert "torch[device-gfx1201]==2.13.0+rocm10.0.0" in command
+    assert env["result"]["plan"]["amd_device"] == "gfx1201"

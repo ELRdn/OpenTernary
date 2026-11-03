@@ -208,7 +208,13 @@ def rank(host: Host, candidates: list[Candidate], backend: str) -> tuple[list[Ca
         elif pool:
             warnings.append("cuda_driver_unknown")
     pool.sort(
-        key=lambda c: (c.torchvision is not None, c.base, _variant_rank(c.variant), -PROVIDER_PRIORITY[c.provider]),
+        key=lambda c: (
+            c.torchvision is not None,
+            c.torchvision is not None and not Version(c.torchvision).is_prerelease,  # stable pairs first
+            c.base,
+            _variant_rank(c.variant),
+            -PROVIDER_PRIORITY[c.provider],
+        ),
         reverse=True,
     )
     if backend == "cpu" and host.os == "linux":
@@ -297,6 +303,18 @@ class Plan:
         out = asdict(self)
         out["candidate"] = asdict(self.candidate)
         return out
+
+
+def amd_device_extra(requested: str, arch: str | None, fetch_listing: Callable[[str], list[str]]) -> str:
+    """`device-<gfx>` when AMD publishes kernels for this GPU alone, else `device-all` (safe, much larger)."""
+    if requested != "auto":
+        return requested
+    if not arch:
+        return "all"
+    try:
+        return arch if fetch_listing(f"amd-torch-device-{arch}") else "all"
+    except OSError:
+        return "all"
 
 
 def find_uv() -> str:

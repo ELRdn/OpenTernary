@@ -20,8 +20,8 @@ def setup(
     torch_version: Annotated[str | None, typer.Option("--torch", help="e.g. 2.13.0 or 2.13.0+rocm10.0.0")] = None,
     variant: Annotated[str | None, typer.Option("--variant", help="e.g. cu130, rocm10.0.0, cpu")] = None,
     amd_device: Annotated[
-        str, typer.Option("--amd-device", help="AMD kernel set: all (default, safest) or a gfx target")
-    ] = "all",
+        str, typer.Option("--amd-device", help="AMD kernel set: auto (this GPU if published), all, or a gfx target")
+    ] = "auto",
     list_only: Annotated[
         bool, typer.Option("--list", help="Show detected hardware and every compatible build")
     ] = False,
@@ -109,6 +109,11 @@ def setup(
     chosen = picked[0]
     if chosen.torchvision is None:
         warnings.append("torchvision_missing")
+    if chosen.provider == "amd":
+        gpu = next((g for g in host.gpus if g.vendor == "amd" and g.arch and not g.integrated), None)
+        amd_device = ts.amd_device_extra(
+            amd_device, gpu.arch if gpu else None, lambda package: ts.list_wheels("amd", package)
+        )
     plan = ts.make_plan(chosen, requirements, ts.find_uv(), amd_device=amd_device, backend=want)
     result["plan"] = plan.to_dict()
     publish(**result)

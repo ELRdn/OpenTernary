@@ -30,6 +30,7 @@ class Gpu:
     driver: str | None = None
     cuda_driver: str | None = None  # highest CUDA version the NVIDIA driver supports, e.g. "13.0"
     source: str = ""
+    integrated: bool = False  # CPU-integrated graphics (never preferred over a discrete GPU)
 
 
 @dataclass
@@ -70,7 +71,9 @@ AMD_DEVICE_ARCH = {
     "73BF": "gfx1030",  # Navi 21: RX 6950 / 6900 / 6800
     "73DF": "gfx1031",  # Navi 22: RX 6750 / 6700
     "73FF": "gfx1032",  # Navi 23: RX 6650 / 6600
+    "164E": "gfx1036",  # Raphael: Ryzen 7000 desktop integrated graphics
 }
+INTEGRATED_NAME = re.compile(r"^AMD Radeon(\(TM\))? Graphics$|Radeon\s+\d{3}M\b|Vega \d+ Graphics", re.IGNORECASE)
 AMD_NAME_ARCH = (
     (r"RX\s*9070", "gfx1201"),
     (r"RX\s*9060", "gfx1200"),
@@ -143,6 +146,7 @@ def parse_windows_video_controllers(raw: str | None) -> list[Gpu]:
                 arch=amd_arch(device_id.group(1) if device_id else None, name) if vendor == "amd" else None,
                 driver=str(row.get("DriverVersion") or "") or None,
                 source="Win32_VideoController",
+                integrated=vendor in {"amd", "intel"} and bool(INTEGRATED_NAME.search(name.strip())),
             )
         )
     return gpus
@@ -222,7 +226,8 @@ def detect(runner: Runner = run) -> Host:
         for gpu in host.gpus:
             if gpu.vendor == "amd":
                 gpu.arch = os.environ["OPENTERNARY_GPU_ARCH"]
-    for gpu in host.gpus:
-        if gpu.vendor == "amd" and gpu.arch is None:
-            host.notes.append("amd_arch_unknown")
+    host.gpus.sort(key=lambda g: (g.integrated, g.vendor != "nvidia", g.arch is None))  # discrete first
+    amd = [g for g in host.gpus if g.vendor == "amd"]
+    if amd and not any(g.arch for g in amd):  # an unknown iGPU next to a known card is not a problem
+        host.notes.append("amd_arch_unknown")
     return host

@@ -220,8 +220,8 @@ M: dict[str, dict[str, str]] = {
         "ja": "AMD GPUの型番を判別できません。必要なら OPENTERNARY_GPU_ARCH=gfxNNNN を指定してください。",
     },
     "setup.amd_device": {
-        "en": "AMD kernels: {device} (use --amd-device gfxNNNN for a smaller download)",
-        "ja": "AMDカーネル: {device}（--amd-device gfxNNNN でダウンロードを小さくできます）",
+        "en": "AMD kernels: {device} (all = every GPU family, several GB; --amd-device all|gfxNNNN to override)",
+        "ja": "AMDカーネル: {device}（all は全GPU分で数GB。--amd-device all|gfxNNNN で変更できます）",
     },
     # --- doctor / backends / plan ------------------------------------------------------------
     "doctor.title": {"en": "Environment", "ja": "環境"},
