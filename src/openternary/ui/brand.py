@@ -163,6 +163,7 @@ def load_mark() -> MarkAsset:
 
 
 MARK_SIZES = (16, 24, 30)
+SPIN_CLOCKWISE = True  # owner decision (2026-11-03): the tomoe heads lead
 
 
 def _best_size(cols: int) -> int:
@@ -171,11 +172,11 @@ def _best_size(cols: int) -> int:
 
 
 @lru_cache(maxsize=512)
-def mark(cols: int = 30, frame: int = 0, clockwise: bool = False) -> Text:
+def mark(cols: int = 30, frame: int = 0, clockwise: bool = SPIN_CLOCKWISE) -> Text:
     """The symbol at the largest baked size <= ``cols``.
 
-    Successive ``frame`` values turn it counter-clockwise (or clockwise when asked); frames are
-    stored for counter-clockwise turns, so clockwise playback walks them backwards.
+    Successive ``frame`` values turn it clockwise by default (the heads lead, as the owner chose);
+    the asset stores counter-clockwise turns, so clockwise playback walks the frames backwards.
     """
     asset = load_mark()
     size = _best_size(cols)

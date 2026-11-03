@@ -1,7 +1,7 @@
 """Animated splash: the OpenTernary symbol turning beside the wordmark.
 
-Run ``python -m openternary.ui.splash`` (``--cw`` for clockwise) to preview in a real terminal.
-The default turn is counter-clockwise; ``OPENTERNARY_SPIN=cw`` changes it. Motion is skipped
+Run ``python -m openternary.ui.splash`` (``--ccw`` for counter-clockwise) to preview in a real
+terminal. The default turn is clockwise; ``OPENTERNARY_SPIN=ccw`` changes it. Motion is skipped
 when stdout is not a TTY or when ``OPENTERNARY_REDUCED_MOTION`` / ``NO_MOTION`` is set; the
 first frame is then printed once.
 """
@@ -29,7 +29,8 @@ def reduced_motion(console: Console) -> bool:
 
 
 def clockwise_default() -> bool:
-    return os.environ.get("OPENTERNARY_SPIN", "ccw").lower() == "cw"
+    spin = os.environ.get("OPENTERNARY_SPIN", "").lower()
+    return brand.SPIN_CLOCKWISE if spin not in ("cw", "ccw") else spin == "cw"
 
 
 def frame(console: Console, index: int, clockwise: bool = False) -> Group:
@@ -68,4 +69,4 @@ def play(seconds: float = 8.0, console: Console | None = None, clockwise: bool |
 
 
 if __name__ == "__main__":
-    play(clockwise=True if "--cw" in sys.argv[1:] else None)
+    play(clockwise=False if "--ccw" in sys.argv[1:] else True if "--cw" in sys.argv[1:] else None)

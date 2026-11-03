@@ -26,11 +26,11 @@
 | D14 | アイコン配色 | 公式SVGの配色を使う: +1 = amber/orange、0 = mint/cyan、-1 = blue/violet、外周リングは連続した虹色（`docs/brand/`） |
 | D15 | UIパレット | ラボのアイコン（金・銅）には合わせない。**Yoru（夜）に決定** |
 | D16 | シンボル | **オーナー作成の公式SVG v1.0**（`docs/brand/openternary-v1.0.svg`）を採用。ストック画像を参考に作った組紐（A）・渦（B）の再構成は破棄 |
-| D17 | アニメーション | 既定は**反時計回り**（オーナー指定）。`OPENTERNARY_SPIN=cw`または`mark(..., clockwise=True)`で時計回り。公式シンボルは頭が時計回りに進む形なので、反時計回りでは尾が先行する（オーナー確認待ち）。48コマ・12fps＝1周4秒。非TTYと`OPENTERNARY_REDUCED_MOTION`/`NO_MOTION`では静止 |
+| D17 | アニメーション | **時計回り**（頭が先に進む向き。2026-11-03 オーナー決定）。`OPENTERNARY_SPIN=ccw`・`--ccw`・`mark(..., clockwise=False)`で反転。資産は反時計回りで格納し、時計回りは逆順再生。48コマ・12fps＝1周4秒。非TTYと`OPENTERNARY_REDUCED_MOTION`/`NO_MOTION`では静止 |
 
 ### 未決事項
 
-- **O4 回転方向の最終確認**: 公式シンボルの流れ（時計回り）と既定の回転（反時計回り）が逆。GIF（両方向）で確認して決める。
+- ~~O4 回転方向~~: 解消（D17、時計回り）。
 - ~~O3 参考画像の出典~~: 解消。オーナー作成のオリジナルSVGに置き換え、ストック由来の再構成（`scripts/design/fit/`、比較画像5・6）はリポジトリから削除した。ただし、このブランチの過去のコミットには残っているので、mainへは squash merge で取り込む。
 
 ## O1: npm と PyPI の比較

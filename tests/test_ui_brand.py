@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import math
 
+import pytest
 from rich.console import Console
 
 from openternary.ui import brand
@@ -68,10 +69,24 @@ def test_baked_colours_follow_the_official_svg() -> None:
         assert min(dist, key=dist.__getitem__) == trit, (band, mean)
 
 
-def test_clockwise_walks_frames_backwards() -> None:
+def test_clockwise_is_the_default_and_walks_frames_backwards() -> None:
     n = brand.mark_frame_count()
-    assert brand.mark(30, 1, clockwise=True).plain == brand.mark(30, n - 1).plain
-    assert brand.mark(30, 0, clockwise=True).plain == brand.mark(30, 0).plain
+    assert brand.SPIN_CLOCKWISE
+    assert brand.mark(30, 1).plain == brand.mark(30, n - 1, clockwise=False).plain
+    assert brand.mark(30, 1, clockwise=True).plain == brand.mark(30, n - 1, clockwise=False).plain
+    assert brand.mark(30, 0).plain == brand.mark(30, 0, clockwise=False).plain
+
+
+def test_spin_environment_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openternary.ui import splash
+
+    mp = monkeypatch
+    mp.delenv("OPENTERNARY_SPIN", raising=False)
+    assert splash.clockwise_default() is True
+    mp.setenv("OPENTERNARY_SPIN", "ccw")
+    assert splash.clockwise_default() is False
+    mp.setenv("OPENTERNARY_SPIN", "nonsense")
+    assert splash.clockwise_default() is True
 
 
 def _band_centroid_angle(frame: int, band: int, cols: int = 30) -> float:
@@ -89,7 +104,7 @@ def _band_centroid_angle(frame: int, band: int, cols: int = 30) -> float:
     return math.degrees(math.atan2(-sum(ys) / len(ys), sum(xs) / len(xs)))
 
 
-def test_mark_rotates_counter_clockwise() -> None:
+def test_asset_frames_are_stored_counter_clockwise() -> None:
     n = brand.mark_frame_count()
     assert n == 48
     step = 360 / n
