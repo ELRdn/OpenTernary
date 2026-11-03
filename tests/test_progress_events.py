@@ -114,3 +114,20 @@ def test_cli_events_have_new_keys_and_monotonic_sequence(tmp_path: Path) -> None
     assert [r["stage"] for r in got] == ["started", "completed"]
     assert all(set(r) == ORIGINAL_KEYS | ADDITIVE_KEYS for r in got)
     assert [r["sequence"] for r in got] == [1, 2]
+
+
+def test_events_file_parent_directories_are_created(tmp_path: Path) -> None:
+    events = tmp_path / "runs" / "nested" / "events.jsonl"
+    result = CliRunner().invoke(app, ["doctor", "--json", "--events-jsonl", str(events)])
+    assert result.exit_code == 0, result.output
+    assert events.is_file()
+
+
+def test_existing_events_file_is_rejected_with_a_clear_message(tmp_path: Path) -> None:
+    events = tmp_path / "events.jsonl"
+    events.write_text("previous run\n", encoding="utf-8")
+    result = CliRunner().invoke(app, ["doctor", "--json", "--events-jsonl", str(events)])
+    assert result.exit_code == 2
+    envelope = json.loads(result.stdout.strip().splitlines()[-1])
+    assert envelope["exit_code"] == 2 and "already exists" in envelope["error"]
+    assert events.read_text(encoding="utf-8") == "previous run\n"  # never overwritten

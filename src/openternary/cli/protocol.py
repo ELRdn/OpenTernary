@@ -113,7 +113,14 @@ class Command(TyperCommand):
                 if events is not None:
                     if ctx.params.get("dry_run"):
                         raise ValueError("--events-jsonl cannot be used with --dry-run (no writes)")
-                    operation.stream = stack.enter_context(Path(events).open("x", encoding="utf-8"))
+                    events_path = Path(events)
+                    events_path.parent.mkdir(parents=True, exist_ok=True)
+                    try:
+                        operation.stream = stack.enter_context(events_path.open("x", encoding="utf-8"))
+                    except FileExistsError as exc:
+                        raise FileExistsError(
+                            f"events file already exists; pass a new path to --events-jsonl: {events_path}"
+                        ) from exc
                 if quiet:
                     sink = stack.enter_context(open(os.devnull, "w", encoding="utf-8"))
                     stack.enter_context(contextlib.redirect_stdout(sink))
