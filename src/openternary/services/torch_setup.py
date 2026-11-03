@@ -189,8 +189,11 @@ def wanted_backend(host: Host, requested: str) -> str:
     return "cpu"
 
 
-def rank(host: Host, candidates: list[Candidate], backend: str) -> tuple[list[Candidate], list[str]]:
-    """Candidates for `backend`, best first, plus warnings about the choice."""
+def rank(
+    host: Host, candidates: list[Candidate], backend: str, verified: set[str] | None = None
+) -> tuple[list[Candidate], list[str]]:
+    """Candidates for `backend`, best first, plus warnings. A build already verified on this PC wins."""
+    verified = verified or set()
     warnings: list[str] = []
     pool = [c for c in candidates if c.backend == backend]
     if backend == "cpu" and host.os == "linux":
@@ -209,6 +212,7 @@ def rank(host: Host, candidates: list[Candidate], backend: str) -> tuple[list[Ca
             warnings.append("cuda_driver_unknown")
     pool.sort(
         key=lambda c: (
+            c.version in verified,
             c.torchvision is not None,
             c.torchvision is not None and not Version(c.torchvision).is_prerelease,  # stable pairs first
             c.base,

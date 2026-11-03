@@ -193,6 +193,8 @@ def error_panel(code: int, message: str, context: str | None, exc_type: str | No
         ("✖ ", brand.ERR), (t(f"error.{code}") if f"error.{code}" in _known() else t("error.1"), "bold")
     )
     body: list[RenderableType] = []
+    if code == 130 and message.strip() in {"", "Abort", "KeyboardInterrupt"}:
+        message = t("error.cancelled")
     if context and context.strip() and context.strip() != message.strip():
         body.append(Text(context.rstrip(":"), style="bold"))
     body.append(Text(message))

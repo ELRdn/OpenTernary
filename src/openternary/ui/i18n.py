@@ -189,6 +189,13 @@ M: dict[str, dict[str, str]] = {
         "en": "No {backend} build is published for this platform",
         "ja": "この環境向けの {backend} ビルドは配布されていません",
     },
+    "setup.already": {
+        "en": "Already set up: {version} is installed and passed the device check here. Nothing to do "
+        "(choose another build with --torch / --variant, or reinstall it with --restore).",
+        "ja": "設定済みです: {version} がインストール済みで、このPCでの動作確認に合格しています。何もしません"
+        "（別のビルドにするなら --torch / --variant、入れ直すなら --restore）。",
+    },
+    "error.cancelled": {"en": "Cancelled by the user.", "ja": "ユーザーが中断しました。"},
     "setup.no_profile": {
         "en": "Nothing to restore: openternary setup has not recorded a build in this environment",
         "ja": "戻す構成がありません。この環境では openternary setup の記録がありません",

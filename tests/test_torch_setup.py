@@ -367,3 +367,43 @@ def test_cli_plan_uses_the_per_gpu_amd_kernels(offline: dict[str, Any]) -> None:
     command = env["result"]["plan"]["command"]
     assert "torch[device-gfx1201]==2.13.0+rocm10.0.0" in command
     assert env["result"]["plan"]["amd_device"] == "gfx1201"
+
+
+def test_a_build_verified_on_this_pc_is_recommended_first() -> None:
+    host = windows(RX9070XT)
+    torch = ["torch-2.14.0+rocm10.1.0-cp312-cp312-win_amd64.whl", "torch-2.13.0+rocm10.1.0-cp312-cp312-win_amd64.whl"]
+    vision = [
+        "torchvision-0.29.0a0+rocm10.1.0-cp312-cp312-win_amd64.whl",
+        "torchvision-0.28.0+rocm10.1.0-cp312-cp312-win_amd64.whl",
+    ]
+    offer = ts.build_offer(host, {"amd": torch}, supported=WIN312)
+    candidates = ts.with_torchvision(offer.candidates, {"amd": vision}, WIN312)
+    pool, _ = ts.rank(host, candidates, "rocm", {"2.14.0+rocm10.1.0"})
+    assert pool[0].version == "2.14.0+rocm10.1.0"
+
+
+def test_cli_does_nothing_when_the_installed_build_is_verified(
+    offline: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    candidate = ts.Candidate("amd", "rocm", "2.13.0+rocm10.0.0", "rocm10.0.0", "https://idx", "0.28.0+rocm10.0.0")
+    plan = ts.make_plan(candidate, [], "uv", python="py", backend="rocm")
+    ts.write_profile(plan, windows(RX9070XT), {"status": "passed"}, tmp_path / ts.PROFILE)
+    monkeypatch.setattr(ts, "installed_torch", lambda: "2.13.0+rocm10.0.0")
+    env = envelope(CliRunner().invoke(app, ["setup", "--json"]))
+    assert env["exit_code"] == 0 and env["result"]["already_set_up"] is True
+    assert offline["install"] == 0
+    env = envelope(CliRunner().invoke(app, ["setup", "--json", "--yes", "--torch", "2.12.0"]))
+    assert env["exit_code"] == 0 and offline["install"] == 1  # an explicit different build still installs
+
+
+def test_cancel_shows_a_human_message() -> None:
+    import io
+
+    from rich.console import Console
+
+    from openternary.ui.render import error_panel
+
+    console = Console(file=io.StringIO(), width=100)
+    console.print(error_panel(130, "Abort", None, "Abort"))
+    out = console.file.getvalue()
+    assert "Abort" not in out and ("Cancelled" in out or "中断" in out)

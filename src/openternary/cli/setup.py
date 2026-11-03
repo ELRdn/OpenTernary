@@ -75,10 +75,10 @@ def setup(
     offer = ts.build_offer(host, listings, pre=pre, minimum=minimum)
     offer.candidates = ts.with_torchvision(offer.candidates, vision)
     offer.errors = errors
-    pool, warnings = ts.rank(host, offer.candidates, want)
-    picked = ts.select(pool, torch_version, variant)
     profile = ts.read_profile()
-    result = {
+    pool, warnings = ts.rank(host, offer.candidates, want, ts.verified_here(profile))
+    picked = ts.select(pool, torch_version, variant)
+    result: dict[str, Any] = {
         "host": host.to_dict(),
         "backend": want,
         "warnings": warnings,
@@ -107,6 +107,19 @@ def setup(
         raise CapabilityError(f"no compatible {want} PyTorch build for Python {host.python} on {host.os}")
 
     chosen = picked[0]
+    current = ts.installed_torch()
+    already = (
+        profile is not None
+        and (profile.get("verification") or {}).get("status") == "passed"
+        and profile.get("version") == current == chosen.version
+        and profile.get("backend") == want
+    )
+    if already:
+        result["already_set_up"] = True
+        publish(**result)
+        setup_view(console, result, None, limit=MAX_LISTED)
+        console.print(t("setup.already", version=chosen.version))
+        return
     if chosen.torchvision is None:
         warnings.append("torchvision_missing")
     if chosen.provider == "amd":
