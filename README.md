@@ -45,6 +45,19 @@ openternary --help
 openternary doctor --json
 ```
 
+**`openternary` をどこからでも使う（推奨）**
+
+`uv sync` だけではコマンドはリポジトリ内の `.venv` にしか入らないため、`uv run openternary ...` で呼ぶか、仮想環境を有効化する（Windows: `.venv\Scripts\Activate.ps1`、macOS/Linux: `source .venv/bin/activate`）。どのフォルダからでも `openternary` と打てるようにするには、リポジトリのフォルダで次を実行する。
+
+```bash
+uv tool install --editable .
+uv tool update-shell
+```
+
+`uv tool update-shell` は初回だけ必要で、実行後にターミナルを開き直す。`--editable` なので `git pull` した変更はそのまま反映される。依存パッケージが増えた更新のあとは `uv tool install --editable . --reinstall` を実行する。Windowsはコマンド名の大文字小文字を区別しないため `OpenTernary` でも動く。
+
+`--json` を付けると、結果のJSON 1行だけがstdoutに出て、人間向けの表示はstderrに回る。ターミナルでは両方が見えるので2回出たように見えるが、`> result.json` のようにリダイレクトすると1行だけが保存される。
+
 - Python 3.12 を推奨（`uv python pin 3.12` で固定、`requires-python >=3.11`）
 - `uv.lock` + `.python-version` + `config.yaml` + `environment.json` で再現性を担保
 
