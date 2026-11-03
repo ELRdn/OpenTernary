@@ -33,7 +33,7 @@ def isolated_cache(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
 
 def test_version_is_declared_once_in_each_place_and_they_agree() -> None:
     declared = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
-    assert declared == openternary.__version__ == "0.1.0a1"
+    assert declared == openternary.__version__ == "0.1.0a2"
 
 
 def test_latest_release_selection() -> None:
