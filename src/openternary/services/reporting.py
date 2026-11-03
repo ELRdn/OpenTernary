@@ -41,6 +41,7 @@ class Operation:
     stream: TextIO | None = None
     sequence: int = 0
     started_at: float = field(default_factory=time.monotonic)
+    error_context: str | None = None  # human-readable "what failed", set by the CLI before exiting
     _last_emit: dict[str, float] = field(default_factory=dict, repr=False)
 
     def event(

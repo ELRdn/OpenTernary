@@ -5,11 +5,12 @@ from typing import Annotated
 
 import typer
 
-from openternary.cli.common import _resolve_cli_overrides, _write_failed_metrics, app, console
+from openternary.cli.common import _resolve_cli_overrides, _write_failed_metrics, app, console, explain
 from openternary.cli.protocol import Command
+from openternary.ui.i18n import t
 
 
-@app.command("calibrate", cls=Command)
+@app.command("calibrate", cls=Command, help=t("help.calibrate"), rich_help_panel=t("panel.workflow"))
 def calibrate(
     model: Annotated[str | None, typer.Argument(help="Model id or path")] = None,
     config: Annotated[pathlib.Path | None, typer.Option("--config", "-c", help="Path to YAML config")] = None,
@@ -56,29 +57,29 @@ def calibrate(
     try:
         cfg = load_config(config_path=config, cli_overrides=overrides)
     except FileNotFoundError as e:
-        console.print(f"[red]Config file not found:[/red] {e}")
+        explain("Config file not found")
         raise typer.Exit(2) from e
     except ValueError as e:
-        console.print(f"[red]Configuration error:[/red] {e}")
+        explain("Configuration error")
         raise typer.Exit(2) from e
 
     if not cfg.calibration.enabled:
         if "enabled" in cfg.calibration.model_fields_set:
-            console.print("[red]calibrate conflicts with calibration.enabled=false[/red]")
+            explain("calibrate conflicts with calibration.enabled=false")
             raise typer.Exit(2)
         cfg.calibration.enabled = True
 
     # Window validation (Phase 4.1 only per-layer)
     if cfg.calibration.window != "per-layer":
-        console.print(f"[red]window={cfg.calibration.window} is not supported in Phase 4.1 (only per-layer)[/red]")
+        explain(f"window={cfg.calibration.window} is not supported in Phase 4.1 (only per-layer)")
         raise typer.Exit(2)
 
     if preflight:
         if any((dry_run, resume, resume_from is not None, materialize_only, init_from is not None, finalize)):
-            console.print("[red]--preflight cannot be combined with execution/recovery options[/red]")
+            explain("--preflight cannot be combined with execution/recovery options")
             raise typer.Exit(2)
         if not cfg.output:
-            console.print("[red]--preflight requires --output[/red]")
+            explain("--preflight requires --output")
             raise typer.Exit(2)
         try:
             from openternary.calibration.preflight import build_preflight_report, write_preflight_report
@@ -89,10 +90,10 @@ def calibrate(
             report = build_preflight_report(cfg, snapshot, output_path)
             report_path = write_preflight_report(report, output_path)
         except (FileNotFoundError, FileExistsError, ValueError) as e:
-            console.print(f"[red]Preflight failed:[/red] {e}")
+            explain("Preflight failed")
             raise typer.Exit(2) from e
         if report["status"] != "pass":
-            console.print(f"[red]Preflight gates failed:[/red] {report['checks']}")
+            explain(f"Preflight gates failed: {report['checks']}")
             console.print(f"[dim]Report: {report_path}[/dim]")
             raise typer.Exit(2)
         console.print(
@@ -103,24 +104,22 @@ def calibrate(
     # --- Finalization-only recovery (Phase 4.2) ---
     if finalize:
         if materialize_only:
-            console.print("[red]--finalize cannot be used with --materialize-only[/red]")
+            explain("--finalize cannot be used with --materialize-only")
             raise typer.Exit(2)
         if init_from is not None:
-            console.print("[red]--finalize cannot be used with --init-from[/red]")
+            explain("--finalize cannot be used with --init-from")
             raise typer.Exit(2)
         # finalize は既存 run 直下へ原子的に書き込むため --output が必須で存在している必要がある
         run_dir_final = pathlib.Path(cfg.output) if cfg.output else None
         if run_dir_final is None or not run_dir_final.exists():
-            console.print(
-                "[red]--finalize requires existing --output directory (e.g. runs/gemma4-e2b-g128-threshold-real-rocm)[/red]"
-            )
+            explain("--finalize requires existing --output directory (e.g. runs/gemma4-e2b-g128-threshold-real-rocm)")
             raise typer.Exit(2)
         # --resume / --resume-from は finalize では source checkpoint 指定として扱う（新規 -001 を作らない）
         ckpt_arg: pathlib.Path | None = None
         if resume_from is not None:
             ckpt_arg = pathlib.Path(resume_from)
             if not ckpt_arg.exists():
-                console.print(f"[red]checkpoint not found for --finalize: {ckpt_arg}[/red]")
+                explain(f"checkpoint not found for --finalize: {ckpt_arg}")
                 raise typer.Exit(2)
         # --resume 単体は latest checkpoint を指すため None で OK
         try:
@@ -133,13 +132,13 @@ def calibrate(
             with run_lock(run_dir_final):
                 result_final = finalize_run(run_dir_final, checkpoint_path=ckpt_arg, dry_run=False)
         except FileNotFoundError as e:
-            console.print(f"[red]Finalize failed (file not found):[/red] {e}")
+            explain("Finalize failed (file not found)")
             raise typer.Exit(2) from e
         except ImportError as e:
-            console.print(f"[red]Finalize failed (missing dependency):[/red] {e}")
+            explain("Finalize failed (missing dependency)")
             raise typer.Exit(2) from e
         except ValueError as e:
-            console.print(f"[red]Finalize failed (integrity gate):[/red] {e}")
+            explain("Finalize failed (integrity gate)")
             raise typer.Exit(2) from e
         except Exception as e:  # noqa: BLE001
             # IntegrityError など
@@ -147,11 +146,11 @@ def calibrate(
                 from openternary.calibration.recovery import IntegrityError
 
                 if isinstance(e, IntegrityError):
-                    console.print(f"[red]Integrity gate FAILED — fail closed, no files written:[/red] {e}")
+                    explain("Integrity gate FAILED — fail closed, no files written")
                     raise typer.Exit(2) from e
             except ImportError:
                 pass
-            console.print(f"[red]Finalize failed:[/red] {e}")
+            explain("Finalize failed")
             raise typer.Exit(1) from e
         if dry_run:
             console.print("[bold cyan]finalize: dry-run — integrity gate PASS[/bold cyan]")
@@ -182,7 +181,7 @@ def calibrate(
     # Handle --materialize-only (skip training, materialize from checkpoint)
     if materialize_only:
         if not cfg.output or not pathlib.Path(cfg.output).exists():
-            console.print("[red]--materialize-only requires existing --output directory[/red]")
+            explain("--materialize-only requires existing --output directory")
             raise typer.Exit(2)
         run_dir = pathlib.Path(cfg.output)  # type: ignore[no-redef]
         ckpt_dir = run_dir / "artifacts" / "checkpoint"
@@ -193,7 +192,7 @@ def calibrate(
             if ckpt_dir.exists() and any(ckpt_dir.glob("step_*.pt")):
                 has_ckpt = True
         if not has_ckpt:
-            console.print(f"[red]no checkpoint found for --materialize-only in {run_dir}[/red]")
+            explain(f"no checkpoint found for --materialize-only in {run_dir}")
             raise typer.Exit(2)
         try:
             import json as _json
@@ -220,20 +219,20 @@ def calibrate(
             result = run_calibration(cfg, teacher_snap, run_dir, resume_from=resume_from, materialize_only=True)
         except FileNotFoundError as e:
             _write_failed_metrics(run_dir, run_id, "FileNotFoundError", str(e))
-            console.print(f"[red]Snapshot not found:[/red] {e}")
+            explain("Snapshot not found")
             raise typer.Exit(2) from e
         except ImportError as e:
             _write_failed_metrics(run_dir, run_id, "ImportError", str(e))
-            console.print(f"[red]Missing dependency:[/red] {e}")
+            explain("Missing dependency")
             raise typer.Exit(2) from e
         except ValueError as e:
             _write_failed_metrics(run_dir, run_id, "ValueError", str(e))
-            console.print(f"[red]Calibration error:[/red] {e}")
+            explain("Calibration error")
             raise typer.Exit(2) from e
         except Exception as e:  # noqa: BLE001
             logger.exception("calibrate materialize-only failed")
             _write_failed_metrics(run_dir, run_id, type(e).__name__, str(e))
-            console.print(f"[red]Calibrate failed:[/red] {e}")
+            explain("Calibrate failed")
             raise typer.Exit(1) from e
         # success summary already handled below, but we duplicate minimal
         console.print(f"[bold green]materialize-only done:[/bold green] {result.get('calibrated_snapshot')}")
@@ -242,10 +241,10 @@ def calibrate(
     # Handle --init-from warm start
     if init_from is not None:
         if resume or resume_from is not None:
-            console.print("[red]--init-from cannot be used with --resume/--resume-from[/red]")
+            explain("--init-from cannot be used with --resume/--resume-from")
             raise typer.Exit(2)
         if not pathlib.Path(init_from).exists():
-            console.print(f"[red]--init-from path not found: {init_from}[/red]")
+            explain(f"--init-from path not found: {init_from}")
             raise typer.Exit(2)
         # store for runner and provenance
         cfg.calibration.init_from = str(init_from)  # type: ignore[attr-defined]
@@ -280,7 +279,7 @@ def calibrate(
             if resume_from is not None and pathlib.Path(resume_from).exists():
                 has_resumable = True
             else:
-                console.print(f"[red]no resumable checkpoint found in {run_dir}[/red]")
+                explain(f"no resumable checkpoint found in {run_dir}")
                 raise typer.Exit(2)
         # read existing run_id if available
         try:
@@ -296,9 +295,7 @@ def calibrate(
             run_id = "resume"
     elif _is_resume_requested:
         # resume requested but no existing output to resume from
-        console.print(
-            "[red]no resumable checkpoint found: --resume/--resume-from requires existing --output directory[/red]"
-        )
+        explain("no resumable checkpoint found: --resume/--resume-from requires existing --output directory")
         raise typer.Exit(2)
     else:
         run_dir, run_id = create_run(cfg)
@@ -319,20 +316,20 @@ def calibrate(
         )
     except FileNotFoundError as e:
         _write_failed_metrics(run_dir, run_id, "FileNotFoundError", str(e))
-        console.print(f"[red]Snapshot not found:[/red] {e}")
+        explain("Snapshot not found")
         raise typer.Exit(2) from e
     except ImportError as e:
         _write_failed_metrics(run_dir, run_id, "ImportError", str(e))
-        console.print(f"[red]Missing dependency:[/red] {e}")
+        explain("Missing dependency")
         raise typer.Exit(2) from e
     except ValueError as e:
         _write_failed_metrics(run_dir, run_id, "ValueError", str(e))
-        console.print(f"[red]Calibration error:[/red] {e}")
+        explain("Calibration error")
         raise typer.Exit(2) from e
     except Exception as e:  # noqa: BLE001
         logger.exception("calibrate failed")
         _write_failed_metrics(run_dir, run_id, type(e).__name__, str(e))
-        console.print(f"[red]Calibrate failed:[/red] {e}")
+        explain("Calibrate failed")
         raise typer.Exit(1) from e
 
     # Write model/metrics already done in runner, but ensure run-level

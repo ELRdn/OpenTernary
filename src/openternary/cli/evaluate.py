@@ -12,9 +12,10 @@ from openternary.config.loader import load_config
 from openternary.experiment.metadata import write_json
 from openternary.experiment.run import create_run
 from openternary.services.diffusion import DiffusionProfile, evaluate_diffusion
+from openternary.ui.i18n import t
 
 
-@app.command("evaluate", cls=Command)
+@app.command("evaluate", cls=Command, help=t("help.evaluate"), rich_help_panel=t("panel.evaluate"))
 def evaluate(
     model: Path,
     profile: Annotated[Path, typer.Option("--profile")],

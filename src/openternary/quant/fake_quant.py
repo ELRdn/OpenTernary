@@ -20,7 +20,7 @@ import struct
 import tempfile
 from typing import Any
 
-from openternary.services.reporting import progress
+from openternary.services.reporting import milestone, progress
 
 try:
     import torch
@@ -458,6 +458,7 @@ def convert_snapshot(
                     shard_path = tmp_root / shard_name
                     # ensure deterministic key order
                     ordered = {k: buffer[k] for k in sorted(buffer.keys())}
+                    milestone("convert.flush", shard=shard_path.name, tensors=len(ordered))
                     safetensors.torch.save_file(ordered, str(shard_path))
                     for k in ordered:
                         weight_map[k] = shard_name
@@ -474,6 +475,7 @@ def convert_snapshot(
                 shard_name = f"model-{shard_index:05d}-of-99999.safetensors"
                 shard_path = tmp_root / shard_name
                 ordered = {k: buffer[k] for k in sorted(buffer.keys())}
+                milestone("convert.flush", shard=shard_path.name, tensors=len(ordered))
                 safetensors.torch.save_file(ordered, str(shard_path))
                 for k in ordered:
                     weight_map[k] = shard_name
@@ -971,6 +973,7 @@ def materialize_calibrated_snapshot(
                         _materialize_log(
                             f"[materialize]   flushing shard {shard_name} with {len(ordered)} tensors, bytes={current_bytes} rss={_get_rss_mb():.1f} MB"
                         )
+                        milestone("materialize.flush", shard=shard_path.name, tensors=len(ordered))
                         safetensors.torch.save_file(ordered, str(shard_path))
                         _materialize_log(f"[materialize]   flushed {shard_path} size={shard_path.stat().st_size} bytes")
                         for k in ordered:
@@ -1008,6 +1011,7 @@ def materialize_calibrated_snapshot(
             shard_name = f"model-{shard_index:05d}-of-99999.safetensors"
             shard_path = tmp_root / shard_name
             ordered = {k: buffer[k] for k in sorted(buffer.keys())}
+            milestone("materialize.flush", shard=shard_path.name, tensors=len(ordered))
             safetensors.torch.save_file(ordered, str(shard_path))
             for k in ordered:
                 weight_map[k] = shard_name

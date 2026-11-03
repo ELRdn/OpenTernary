@@ -621,15 +621,19 @@ def test_runner_reports_structured_progress(local_teacher, tmp_path, monkeypatch
     rows = [json.loads(line) for line in stream.getvalue().splitlines()]
     stages = [r["stage"] for r in rows]
     order = [
+        "calibrate.dataset",
         "calibrate.load_teacher",
         "calibrate.cache",
         "capture.batches",
+        "calibrate.prepare",
         "calibrate.modules",
         "calibrate.steps",
         "calibrate.checkpoint",
         "calibrate.evaluate",
         "calibrate.materialize",
         "materialize.tensors",
+        "materialize.flush",
+        "calibrate.report",
     ]
     assert [stages.index(s) for s in order] == sorted(stages.index(s) for s in order)
     assert {r["detail"]["split"] for r in rows if r["stage"] == "capture.batches"} == {"train", "heldout"}

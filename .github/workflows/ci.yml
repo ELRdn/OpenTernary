@@ -48,6 +48,8 @@ jobs:
           tests/test_run_metadata.py tests/test_cli_help.py
           tests/test_extensions_product.py tests/test_artifact_product.py
           tests/test_cli_json_contract.py tests/test_ui_brand.py
+          tests/test_progress_events.py tests/test_cli_presentation.py
+          tests/test_torch_setup.py tests/test_update.py
 
       - name: Build wheel and sdist
         run: uv build
@@ -85,7 +87,8 @@ jobs:
       - run: uv build --wheel
       - run: uv venv .cli-wheel --python 3.12
       - run: uv pip install --python ${{ matrix.python }} torch==2.13.0 torchvision==0.28.0 --index-url https://download.pytorch.org/whl/cpu
-      - run: uv pip install --python ${{ matrix.python }} dist/openternary-0.1.0a0-py3-none-any.whl transformers==5.15.1 accelerate==1.14.0 safetensors==0.8.0 diffusers==0.40.0 sentencepiece==0.2.2
+      - shell: bash
+        run: uv pip install --python ${{ matrix.python }} dist/openternary-*-py3-none-any.whl transformers==5.15.1 accelerate==1.14.0 safetensors==0.8.0 diffusers==0.40.0 sentencepiece==0.2.2
       - run: uv pip install --python ${{ matrix.python }} --no-deps torchao==0.18.0
       - name: Installed wheel, seeded real libraries, fresh processes
         run: ${{ matrix.python }} scripts/validate_cli_real.py --root "${{ runner.temp }}/cli-real" --require-wheel

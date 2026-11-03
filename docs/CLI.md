@@ -1,6 +1,6 @@
 # OpenTernary CLI guide
 
-2026-09-23 / CLI・manifest schema 1 / package 0.1.0a0
+2026-09-23 / CLI・manifest schema 1 / package 0.1.0a1
 
 このガイドは現在の実装を説明する。実モデル・GPU・外部runtimeの受入状況は[検証表](CLI_IMPLEMENTATION_STATUS.md)、今後のGateは[CLIロードマップ](../CLI_ROADMAP.md)を参照。
 
@@ -43,6 +43,39 @@ openternary plugins --json
 変換用依存は`pip install -e ".[ml]"`、TorchAOは`.[ml,torchao]`、Diffusersは`.[ml,diffusion]`、研究校正は`.[ml,calibration]`。既存のROCm環境を上書きせず、追加backendは対応する別環境で導入する。TorchAOは`0.18.0`、Diffusersは`0.40.0`を指定する。人工fixtureでの実package・wheel試験の証拠は[検証表](CLI_IMPLEMENTATION_STATUS.md)を参照。
 
 通常の`doctor`はpackage metadataのみを読む。`doctor --probe-runtime --device cpu|cuda`を明示すると、固定小型tensorでFP32/BF16演算・実device・有限値を確認する。モデルはロードしない。`backends`の`installation`と`model_reload`/`native_kernel`は別の状態である。
+
+## PyTorchの環境構築（`setup`）
+
+```text
+openternary setup --list          # 検出したGPUと、このPCで入るPyTorchの一覧
+openternary setup --dry-run       # おすすめの計画だけ表示
+openternary setup                 # 確認のうえインストールし、デバイスで動作確認
+openternary setup --backend rocm --torch 2.13.0
+openternary setup --restore       # 前回setupで入れた構成をそのまま入れ直す
+```
+
+- 対象は**`openternary`を実行している環境**（`sys.executable`）。`uv pip install --python <その環境>`で入れる。uvが必要。
+- GPU検出: NVIDIAは`nvidia-smi`（ドライバが対応するCUDAの上限も読む）、WindowsのAMDは`Win32_VideoController`のPCIデバイスIDからgfxを推定、Linux/WSLのAMDは`rocminfo`か`/sys`、macOSのApple siliconはMPS。判別できないAMDは`OPENTERNARY_GPU_ARCH=gfxNNNN`で指定する。
+- 配布元はその場で一覧を取得する（固定のバージョン表は持たない）: PyTorch公式（`download.pytorch.org/whl`、CUDA/ROCm/CPU）、AMD（`stable.repo.amd.com/rocm/whl-next`、Windows/LinuxのROCm）、PyPI。URLは`OPENTERNARY_INDEX_PYTORCH`/`_AMD`/`_PYPI`で差し替えられる。
+- このPCのPythonとOSで入るwheelだけを出す。Pythonが合わない場合は、ビルドのあるPythonを示す（例: Windows ROCmは3.12/3.13のみ）。
+- 同じ配布元に対応するtorchvision（`0.(minor+15)`、同じlocal版）があるものを優先して推奨する。torchvisionが未公開の版を明示的に選ぶとtorchだけを入れ、警告を出す。
+- NVIDIAはドライバのCUDA上限以下のビルドだけを推奨する。AMDのカーネルは既定で`device-all`（`--amd-device gfxNNNN`で小さくできる）。
+- インストール後、新しいプロセスで`runtime_probe`（FP32/BF16の行列積）を実デバイスで実行し、結果と構成を`<環境>/openternary-torch.json`に記録する。失敗は終了コード5。`doctor`はこの記録と実際のtorchを並べて表示し、`uv sync`などで入れ替わっていれば`setup --restore`を案内する。
+- 対話端末以外と`--json`では、`--yes`がないとインストールしない（終了コード2）。
+
+## 更新（`update`）
+
+```text
+openternary update --check        # PyPIの最新版を確認するだけ
+openternary update --dry-run      # 実行する手順を表示
+openternary update                # 確認のうえ更新し、setupの構成を入れ直す
+```
+
+- 確認に使うネットワークはPyPIのJSON（`pypi.org/pypi/openternary/json`）だけ。結果は1日キャッシュする。`doctor`は対話端末のときだけ1日1回確認し、新しい版があれば表示する（`OPENTERNARY_NO_UPDATE_CHECK=1`で無効）。PyPI未公開（404）はエラーにしない。
+- インストール方法で手順が変わる: `uv tool`なら`uv tool upgrade openternary`、通常のvenvなら`uv pip install --upgrade openternary`、ソースからのeditable導入は自動では変更せず`git pull`を案内する。
+- 更新でツール環境が作り直されてもよいように、`setup`の記録を一時ファイルに退避し、更新後に`openternary setup --restore --profile <退避先> --yes`で同じPyTorchを入れ直す。
+- Windowsの`uv tool`導入では実行中の`openternary`を置き換えられないため、実行せずに手順を表示する。
+- 対話端末以外と`--json`では`--yes`がないと更新しない（終了コード2）。
 
 ## 計画と設定
 
@@ -163,6 +196,14 @@ openternary optimize "D:/models/example" --search-space space.json --quality-pro
 
 全候補不合格は`no_feasible_candidate`、予算停止は`budget_exhausted`。どちらもbestを公開しない。容量は100ms間隔で監視するため、その間の一時超過余地がある。CPU以外のworkerはwall timeを保守的なGPU時間として算入する。deviceのピーク値や品質の実測検証は次段階。
 
+## 人間向けの表示・言語
+
+`--json`を付けない場合、`doctor`・`backends`・`plan`・`plugins`などは表で表示する（以前は整形したJSONをそのまま表示していた。機械処理には`--json`を使う）。状態は記号＋語で示し、色は記号だけに付ける（✔ 受入・合格、● 導入済み/完了、◐ 未検証、▲ 実験的・注意、○ 未実行・未導入、– 非対応、✖ 失敗）。`completed`（処理完了）は品質合格ではないため成功色にしない。
+
+エラーは標準エラーに1回だけ、パネルで表示する（何が失敗したか・詳細・必要ならヒント・終了コード）。`--json`の`error`は従来どおり例外の文言で、例外を伴わない入力エラーでは同じ説明文が入る（以前は`... rejected the request (see stderr)`）。
+
+表示言語は`OPENTERNARY_LANG=en|ja`、未指定ならOSのロケールで決まる。日本語を表示できない文字コード（cp1252など）では英語になる。helpのコマンド説明とパネル名、表とエラーの見出しが対象で、`--json`の内容は言語に依存しない。
+
 ## JSON・終了コード
 
 各末端コマンドで`--json`、`--quiet`、`--events-jsonl NEW_FILE`を使用できる。JSONはstdoutに1文書、通常表示はstderrへ移す。`--quiet`も結果・エラーは保持する。`--dry-run`とeventsファイル出力の併用は副作用を避けるため拒否する。
@@ -192,15 +233,18 @@ JSONLの各行は`schema_version/sequence/command/run_id/stage/completed/total`�
 | `started` / `completed` / `failed` / `interrupted` | — | — | 全コマンド（従来どおり） |
 | `run_created` | — | — | run作成時（従来どおり） |
 | `phase` | — | `name`, `device` | 負荷計測の区切り（load / inference など） |
-| `convert.tensors` / `convert.hash` | tensor / shard | `tensor` | `quantize`、探索の候補変換 |
+| `convert.tensors` / `convert.flush` / `convert.hash` | tensor / — / shard | `tensor` / `shard`, `tensors` | `quantize`、探索の候補変換 |
+| `calibrate.dataset` | — | `dataset`, `samples`, `seq_len` | 校正テキストとトークナイザの準備（初回はダウンロードを含む） |
 | `calibrate.load_teacher` | — | `snapshot` | 教師モデル読込開始 |
 | `calibrate.cache` | — | `status`（capturing / reused）, `source` | 活性値キャッシュ |
 | `capture.batches` | batch | `split`（train / heldout） | 教師の入出力収集 |
+| `calibrate.prepare` | — | `modules` | キャッシュ記録・教師解放・モジュール状態の準備 |
 | `calibrate.modules` | module | `module`、完了時`last_loss` | 対象モジュールの開始・完了 |
 | `calibrate.steps` | step | `module`, `module_index`, `modules`, `loss` | 最適化ステップ（モジュール内） |
 | `calibrate.checkpoint` | — | `checkpoint`, `cursor` | チェックポイント保存 |
 | `calibrate.evaluate` | module | `module` | train/held-out再構成誤差の算出 |
-| `calibrate.materialize` / `materialize.tensors` / `materialize.hash` | — / tensor / shard | `destination` / `tensor` | 校正済みsnapshotの書き出し |
+| `calibrate.materialize` / `materialize.tensors` / `materialize.flush` / `materialize.hash` | — / tensor / — / shard | `destination` / `tensor` / `shard`, `tensors` | 校正済みsnapshotの書き出し（`flush`はshardのディスク書込開始） |
+| `calibrate.report` | — | — | 指標・`calibration.json`・metricsの作成 |
 | `benchmark.prompts` | prompt | `prompt` | `benchmark` |
 | `quality.perplexity` / `quality.cases` | language / case | `language` / `case` | `quality` |
 | `export.tensors` | tensor | `tensor` | packed export / 復元 |
@@ -227,6 +271,8 @@ run作成後の失敗はmetricsへ理由を残す。初期metadata作成途中�
 | 空compareの成功 | 入力エラー、作成済みrunに失敗を記録 |
 | schemaなしqualityの合格判定 | 観測結果のみ、accepted=false |
 | `cache-info` | 維持。管理artifact操作は`cache list/remove`へ分離 |
+| `doctor`等の通常表示がJSON | 表で表示。機械処理は`--json` |
+| エラーが2回表示される | 1回のパネル表示に統一 |
 
 ## Python API・plugin
 

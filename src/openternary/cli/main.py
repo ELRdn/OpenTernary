@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from importlib import import_module
 from typing import Annotated
 
 import typer
@@ -30,17 +31,40 @@ def main(
     pass
 
 
-from openternary.cli import (  # noqa: E402, F401
-    benchmark,
-    cache,  # noqa: E402, F401
-    cache_info,
-    calibrate,
-    compare,
-    evaluate,  # noqa: E402, F401
-    export,
-    inspect,
-    optimize,  # noqa: E402, F401
-    product,  # noqa: E402, F401
-    quality,
-    quantize,
+for _module in (
+    "inspect",
+    "product",  # plan, doctor, plugins, backends, artifacts
+    "quantize",
+    "calibrate",
+    "export",
+    "benchmark",
+    "quality",
+    "evaluate",
+    "compare",
+    "optimize",
+    "cache_info",
+    "cache",
+    "setup",
+    "update",
+):
+    import_module(f"openternary.cli.{_module}")
+
+# Help shows panels in order of first appearance: workflow, evaluate, environment.
+HELP_ORDER = (
+    "inspect",
+    "plan",
+    "quantize",
+    "calibrate",
+    "export",
+    "benchmark",
+    "quality",
+    "evaluate",
+    "compare",
+    "optimize",
+    "doctor",
+    "setup",
+    "update",
+    "plugins",
+    "cache-info",
 )
+app.registered_commands.sort(key=lambda c: HELP_ORDER.index(c.name) if c.name in HELP_ORDER else len(HELP_ORDER))
