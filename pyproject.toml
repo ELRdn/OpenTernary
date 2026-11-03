@@ -39,7 +39,9 @@ diffusion = ["diffusers==0.40.0"]
 openternary = "openternary.cli.main:run"
 
 [project.urls]
+Documentation = "https://elrdn.github.io/OpenTernary/"
 Repository = "https://github.com/ELRdn/OpenTernary"
+Changelog = "https://elrdn.github.io/OpenTernary/project/changelog/"
 
 [dependency-groups]
 dev = [
@@ -49,6 +51,11 @@ dev = [
     "mypy>=1.10",
     "types-PyYAML",
     "types-psutil",
+]
+# The documentation site (mkdocs.yml). Pinned so `mkdocs build --strict` is reproducible.
+docs = [
+    "mkdocs-material==9.8.0",
+    "mkdocs-static-i18n==1.3.1",
 ]
 
 [build-system]

@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "dataset": {
+    "id": "example/quality-mini",
+    "revision": "v1",
+    "license": "CC0-1.0",
+    "source": [{"id": "handwritten", "revision": "v1"}]
+  },
+  "splits": {
+    "calibration": [
+      {"id": "cal-1", "text": "The river carried small boats past the old mill every morning.", "language": "en"}
+    ],
+    "validation": [
+      {"id": "val-en-1", "text": "Tea was first grown in the hills, where the air stays cool and wet all year.", "language": "en"},
+      {"id": "val-ja-1", "text": "駅の近くには小さな本屋があり、週末になると多くの人が集まります。", "language": "ja"}
+    ],
+    "test": [
+      {"id": "test-en-1", "text": "A lighthouse keeper wrote down the weather twice a day for forty years.", "language": "en"},
+      {"id": "test-ja-1", "text": "冬の朝は空気が澄んでいて、遠くの山まではっきりと見えます。", "language": "ja"}
+    ]
+  },
+  "instruction_cases": {
+    "validation": [
+      {"id": "val-case-1", "prompt": "Reply with only the word: blue", "expected": "blue"}
+    ],
+    "test": [
+      {"id": "test-case-1", "prompt": "Reply with only the number: 7", "expected": "7"}
+    ]
+  }
+}

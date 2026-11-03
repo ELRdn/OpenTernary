@@ -1,0 +1,191 @@
+/* OpenTernary docs — the CLI's "Yoru" palette (src/openternary/ui/brand.py) on Material for MkDocs. */
+
+:root {
+  --ot-plus: #ffad55;   /* +1 */
+  --ot-zero: #43efc5;   /*  0 */
+  --ot-minus: #8168fa;  /* -1 */
+  --ot-spectrum: linear-gradient(90deg, #ffa36b 0%, #ffd157 18%, #7aef9c 34%, #38d9d0 53%, #5e8dff 72%, #aa7eff 90%, #ef8dd0 100%);
+  --ot-ok: #0f9d9d;
+  --ot-warn: #b7791f;
+  --ot-err: #c2412d;
+  --md-text-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Yu Gothic UI", Meiryo, Roboto, "Helvetica Neue", Arial, sans-serif;
+  --md-code-font-family: "JetBrains Mono", "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, "BIZ UDGothic", "Noto Sans Mono CJK JP", monospace;
+}
+
+/* Light scheme: deep indigo header, violet accent. */
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color: #1b1f3b;
+  --md-primary-fg-color--light: #2b3158;
+  --md-primary-fg-color--dark: #090c1c;
+  --md-primary-bg-color: #f4f2ff;
+  --md-primary-bg-color--light: #e9ebf3;
+  --md-accent-fg-color: #6b4fd8;
+  --md-accent-fg-color--transparent: rgba(107, 79, 216, 0.1);
+  --md-typeset-a-color: #5b3fd0;
+}
+
+/* Dark scheme: the TUI's own colours. */
+[data-md-color-scheme="slate"] {
+  --md-hue: 232;
+  --md-default-bg-color: #0b0f22;
+  --md-default-bg-color--light: #121627;
+  --md-default-fg-color: #e9ebf3;
+  --md-default-fg-color--light: #c3c8de;
+  --md-default-fg-color--lighter: #949cc2;
+  --md-default-fg-color--lightest: #272c46;
+  --md-primary-fg-color: #090c1c;
+  --md-primary-fg-color--light: #121627;
+  --md-primary-fg-color--dark: #05070f;
+  --md-primary-bg-color: #e9ebf3;
+  --md-primary-bg-color--light: #949cc2;
+  --md-accent-fg-color: #b89ffe;
+  --md-accent-fg-color--transparent: rgba(184, 159, 254, 0.12);
+  --md-typeset-a-color: #b89ffe;
+  --md-code-bg-color: #121627;
+  --md-code-fg-color: #e9ebf3;
+  --md-footer-bg-color: #090c1c;
+  --md-footer-bg-color--dark: #05070f;
+  --ot-ok: #40e5e5;
+  --ot-warn: #f0ba59;
+  --ot-err: #f2725b;
+}
+
+/* The rainbow ring of the logo, as a thin line under the header. */
+.md-header {
+  box-shadow: none;
+}
+.md-header::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--ot-spectrum);
+  opacity: 0.85;
+}
+.md-tabs {
+  background-color: var(--md-primary-fg-color--light);
+}
+.md-header__button.md-logo img,
+.md-header__button.md-logo svg {
+  height: 1.6rem;
+}
+
+/* Home page hero. */
+.ot-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 1.5rem;
+  align-items: center;
+  margin: 0.5rem 0 1.5rem;
+}
+.ot-hero img {
+  width: 9rem;
+  height: 9rem;
+}
+.ot-hero h1 {
+  margin: 0 0 0.4rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.ot-hero p.ot-tagline {
+  font-size: 1.05rem;
+  color: var(--md-default-fg-color--light);
+  margin: 0 0 1rem;
+}
+@media screen and (max-width: 44.9375em) {
+  .ot-hero {
+    grid-template-columns: 1fr;
+  }
+  /* The header already shows the symbol; on phones the hero keeps the text and buttons only. */
+  .ot-hero > :last-child {
+    display: none;
+  }
+}
+
+/* Trits: +1 / 0 / -1 in the logo's colours. */
+.ot-trit {
+  font-family: var(--md-code-font-family);
+  font-weight: 700;
+  padding: 0 0.15em;
+}
+.ot-trit.plus { color: var(--ot-plus); }
+.ot-trit.zero { color: var(--ot-zero); }
+.ot-trit.minus { color: var(--ot-minus); }
+
+/* Status words used throughout the CLI: the symbol carries the colour, the word stays readable. */
+.ot-ok { color: var(--ot-ok); font-weight: 600; }
+.ot-warn { color: var(--ot-warn); font-weight: 600; }
+.ot-err { color: var(--ot-err); font-weight: 600; }
+
+/* Terminal output blocks (```console / ```text) read better a little denser. */
+.md-typeset pre > code {
+  line-height: 1.45;
+}
+
+/* TUI screenshots (SVG exported by Textual). */
+.ot-screenshot {
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 0.4rem;
+  overflow: hidden;
+  margin: 1rem 0;
+}
+.ot-screenshot img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* Grid cards on landing pages: slightly calmer borders. */
+.md-typeset .grid.cards > ul > li,
+.md-typeset .grid > .card {
+  border-color: var(--md-default-fg-color--lightest);
+}
+.md-typeset .grid.cards > ul > li:hover,
+.md-typeset .grid > .card:hover {
+  border-color: var(--md-accent-fg-color);
+}
+
+/* Tables: keep long flag names on one line. */
+.md-typeset table:not([class]) td:first-child code {
+  white-space: nowrap;
+}
+
+/* Buttons: the primary colour is the header's dark indigo, so give buttons the accent instead. */
+.md-typeset .md-button {
+  border-radius: 0.3rem;
+  color: var(--md-accent-fg-color);
+  border-color: var(--md-accent-fg-color);
+}
+.md-typeset .md-button--primary {
+  background-color: var(--md-accent-fg-color);
+  border-color: var(--md-accent-fg-color);
+  color: var(--md-default-bg-color);
+}
+.md-typeset .md-button:focus,
+.md-typeset .md-button:hover {
+  background-color: var(--md-accent-fg-color);
+  border-color: var(--md-accent-fg-color);
+  color: var(--md-default-bg-color);
+  filter: brightness(1.08);
+}
+[data-md-color-scheme="default"] .md-typeset .md-button--primary {
+  color: #ffffff;
+}
+
+/* Headings in the page body: full contrast. */
+.md-typeset h1 {
+  color: var(--md-default-fg-color);
+}
+
+/* Light scheme: darker trits for contrast on white. */
+[data-md-color-scheme="default"] .ot-trit.plus { color: #c25e00; }
+[data-md-color-scheme="default"] .ot-trit.zero { color: #0a8a6c; }
+[data-md-color-scheme="default"] .ot-trit.minus { color: #5a3fe0; }
+
+/* Material sizes figures to their content; screenshots should use the full column. */
+.md-typeset figure.ot-screenshot {
+  width: 100%;
+  max-width: 100%;
+}
