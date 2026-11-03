@@ -14,14 +14,14 @@ cache = typer.Typer(help="Manage explicitly selected OpenTernary artifact roots"
 app.add_typer(cache, name="cache", help=t("help.cache"), rich_help_panel=t("panel.environment"))
 
 
-@cache.command("list", cls=Command)
+@cache.command("list", cls=Command, help=t("help.cache_list"))
 def cache_list(root: Path) -> None:
     from openternary.services.cache import list_artifacts
 
     display({"artifacts": list_artifacts(root)})
 
 
-@cache.command("remove", cls=Command)
+@cache.command("remove", cls=Command, help=t("help.cache_remove"))
 def cache_remove(
     target: Path,
     root: Annotated[Path, typer.Option("--root")],

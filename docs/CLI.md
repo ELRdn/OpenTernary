@@ -204,10 +204,23 @@ openternary ui         # 明示して開く（--runs で実行結果フォルダ
 ```
 
 - 開くのは対話できるターミナル（stdin・stdoutともTTY）のときだけ。パイプ・CI（`CI`環境変数）・`TERM=dumb`・`OPENTERNARY_NO_TUI=1`では、引数なしは従来どおりhelpを表示して終了コード2。`openternary ui`は終了コード2で理由を表示する。
-- タブ: ホーム（版・更新・PyTorch・直近の実行）／実行結果（`runs/`の一覧と詳細、`x`で削除、`b`/`c`で比較の基準・候補に設定）／ジョブ（実行中・過去のジョブ、段階ごとの進捗・ETA・stderr、`k`で中止）／比較／診断（`doctor`の表、実機確認、PyTorch導入）／更新。数字キー`1`〜`6`で切り替え、`n`で新しいジョブ、`q`で終了。
+- 操作はボタンではなく選択式（コーディング用エージェントのCLIと同じ形）。画面下の`❯`の入力欄が起点で、`/`を打つとコマンドの候補が一覧で出る。続けて文字を打つと絞り込まれ（名前の前方一致が先頭）、`↑`/`↓`で選び、`Enter`で実行、`Tab`で補完、`Esc`で閉じる。候補が出ていないときの`↑`/`↓`は、表示中のタブの一覧（実行結果・ジョブ）を動かす。終了は`/quit`または`Ctrl+Q`。
+- 主なコマンド:
+
+  | コマンド | 内容 |
+  |---|---|
+  | `/new` | コマンドの一覧から選び、フォーム → 計画 → 開始 |
+  | `/quantize`・`/calibrate`など | そのコマンドのフォームを開く。`/quantize --config configs/x.yaml`のように引数を続けると、フォームを飛ばして計画画面へ |
+  | `/compare` | 基準と候補を実行結果の一覧から順に選び、比較のフォームへ（`/baseline`・`/candidate`で、実行結果タブで選択中のものを先に指定しておける） |
+  | `/home`・`/runs`・`/jobs`・`/doctor`・`/update` | タブを表示 |
+  | `/cancel`・`/delete` | 選択中のジョブを中止／選択中の実行結果を削除 |
+  | `/probe`・`/setup`・`/upgrade`・`/check`・`/refresh` | 実機確認（`doctor --probe-runtime`）／PyTorch導入／更新（`update`）／PyPIの確認／再読込 |
+  | `/cache:remove`など | グループのコマンドは`:`でつなぐ |
+
+- 確認画面（計画・削除・中止・終了）も`❯`の選択肢から`↑`/`↓`と`Enter`で選ぶ。実行できない選択肢（dry-run前の「開始」、名前を入力する前の「削除」）は薄く表示され、`❯`が止まらない。
 - **重い処理はTUIの中で実行しない。** ジョブは通常のCLIを子プロセスで起動する: `python -m openternary <コマンド> … --json --events-jsonl <ジョブの記録先>/events.jsonl`。終了コード・JSON・run lock・`last_failure.json`はスクリプトから使う場合と同一で、メモリ不足で子が落ちてもTUIは巻き込まれない。
 - 新しいジョブのフォームはCLIの定義（Typerのコマンドと引数）から自動生成する。`--json`・`--events-jsonl`・`--quiet`・`--dry-run`・`--yes`はTUIが扱うので表示しない。
-- 開始前に計画画面で、実行するコマンド行と、そのコマンド自身の`--dry-run`の出力を表示する。dry-runが失敗した場合は開始できない。`setup`・`update`は、この画面で開始することが`--yes`の代わりになる。
+- 開始前に計画画面で、実行するコマンド行と、そのコマンド自身の`--dry-run`の出力を表示する。dry-runが通るまで「開始」は選べず、失敗した場合も選べない。`setup`・`update`は、この画面で開始することが`--yes`の代わりになる。
 - 削除は名前の入力で確認する: 実行結果フォルダ（`runs/`直下の実行フォルダだけ。別プロセスが`.execution.lock`を持つ実行は拒否）と、`cache remove --execute`（対象の名前）。
 - 中止: 1回目は割り込み（POSIXはプロセスグループへSIGINT、WindowsはCtrl+Breakを送り、子は`KeyboardInterrupt`として扱う）。コマンドは安全に止まり終了コード130、失敗はrunに記録される。2回目は子プロセスごと強制停止（記録は残らない）。
 - ジョブの記録は`%LOCALAPPDATA%\openternary\jobs`（Windows）、`$XDG_STATE_HOME/openternary/jobs`（既定`~/.local/state/…`）。`OPENTERNARY_STATE_DIR`で変更できる。TUIを閉じてもジョブは続き、開き直すと監視を再開する（Linux/macOS）。Windowsでは、ターミナルのウィンドウを閉じると、そのコンソールで動くジョブも止まる。
