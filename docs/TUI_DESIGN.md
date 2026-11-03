@@ -120,11 +120,31 @@ OKLCHで明度・彩度を固定し、色相だけを回す（HSVの虹と違い
 | Phase | 内容 | 終了条件 |
 |---|---|---|
 | P1 ✅ | `--json`契約の固定（14プローブ）、ブランド部品 | golden一致・CI登録 |
-| P2 ✅（実機検証待ち） | 長時間処理の構造化イベント（追加のみ、schema_version 1のまま）。一覧は`docs/CLI.md`の「JSON・終了コード」 | 実機runでイベント時刻とログが一致（オーナーの実run待ち） |
+| P2 ✅ | 長時間処理の構造化イベント（追加のみ、schema_version 1のまま）。一覧は`docs/CLI.md`の「JSON・終了コード」 | オーナー実機のsmoke runで欠落・順序乱れなし（下記）。ログとの時刻突合は`logs/`未入手のため未実施 |
 | P3 | theme・i18n・helpのグループ化と内部用語除去・`doctor`等の人間向け表示・エラーパネル | golden差分ゼロ、スナップショットをオーナー承認 |
 | P4 | タグ運用・リリースworkflow・`update`（確認→計画→実行→検証→ロールバック）・起動時の更新確認 | シナリオ表をすべて通過、torchの`pip freeze`が不変 |
 | P5 | Textual App（Home / Runs / Job monitor / Compare / Doctor / Update） | Pilotテスト・snapshot・実機での監視 |
 | P6 | `docs/CLI.md`更新、移行表、Windows CI | DoD確認 |
+
+## 実機計測（P2、2026-11-03）
+
+オーナーのWindows PC（CPU実行）で`configs/gemma4-e2b-calibration-smoke.yaml`（205モジュール × 2ステップ、8サンプル × 64トークン）を実行した`--events-jsonl`の集計。
+
+| 段階 | 所要 | 備考 |
+|---|---|---|
+| 開始〜データセット準備 | 11.7秒 | wikitext初回ダウンロードを含む。当時はイベントがなく無言 → `calibrate.dataset`を追加 |
+| 教師モデル読込 | 8.6秒 | |
+| 活性値収集 | 6.3秒 | train 7バッチ・heldout 1バッチ |
+| 収集後の準備 | 15.2秒 | 無言 → `calibrate.prepare`を追加 |
+| モジュール最適化 | 150.7秒 | 1モジュールあたり中央値0.45秒・最大1.33秒（後半層のMLPが重い） |
+| 評価 | 26.8秒 | |
+| 書き出し | 145.0秒 + hash 6.9秒 | `embed_tokens_per_layer`の処理とshard書込で最大31秒無言 → `materialize.flush`を追加 |
+| 結果の作成 | 10.3秒 | 無言 → `calibrate.report`を追加 |
+| 合計 | 381.8秒 | オーナー体感の約8分との差は、コマンド開始前（`uv run`・Python・torchの起動）と推測 |
+
+- 1394行・416KB。sequenceと`elapsed_s`は単調増加、全行のキー構成が同一、`completed == total`の最終行は全段階で出ている。
+- 書き出し中のRSSはコンソールログで約18.6GB。メモリの少ないPCでは書き出しが最も厳しい段階になりうる。
+- 本番設定（50ステップ・32サンプル × 128トークン）の所要は、モジュール最適化が計算量にほぼ比例すると仮定して、このPCのCPUで**おおよそ5〜7時間（推測、未計測）**。
 
 ## 既知の事実（P1で判明）
 

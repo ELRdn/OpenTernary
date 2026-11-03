@@ -745,6 +745,7 @@ def _run_calibration_impl(
 
     # Resolve texts with fallback handling
     requested_dataset = str(calib_cfg.dataset)
+    milestone("calibrate.dataset", dataset=requested_dataset, samples=num_samples, seq_len=seq_len)
     try:
         texts, effective_dataset, dataset_fallback = get_calibration_texts(
             requested_dataset,
@@ -1241,6 +1242,7 @@ def _run_calibration_impl(
         # Set a flag to skip next unload
         _model_unloaded = True  # noqa: F841
     # Model already unloaded in both branches above (reuse or capture)
+    milestone("calibrate.prepare", modules=len(target_module_names))
 
     # 5. Per-module quant state (codes/scales) from original snapshot weights
     # Load original weights via safetensors
@@ -2959,6 +2961,7 @@ def _run_calibration_impl(
     from openternary.quant.fake_quant import materialize_calibrated_snapshot
 
     calibrated_snapshot = out / "artifacts" / "calibrated_snapshot"
+    progress("calibrate.evaluate", len(per_module), len(per_module), unit="module")
     # Fast gate: skip heavy materialize (hashing 1951 tensors) when OT_SKIP_MATERIALIZE=1
     import os as _os_skip
 
@@ -2984,7 +2987,6 @@ def _run_calibration_impl(
             import shutil as _sh
 
             _sh.rmtree(calibrated_snapshot, ignore_errors=True)
-        progress("calibrate.evaluate", len(per_module), len(per_module), unit="module")
         milestone("calibrate.materialize", destination=str(calibrated_snapshot))
         _report = materialize_calibrated_snapshot(
             src_snapshot=pathlib.Path(teacher_snapshot),  # type: ignore[arg-type]
@@ -2996,6 +2998,7 @@ def _run_calibration_impl(
         if not (calibrated_snapshot / "model.safetensors.index.json").exists():
             raise RuntimeError("calibrated_snapshot materialization failed: missing index.json")
 
+    milestone("calibrate.report")
     # Threshold / code metrics
     thr_fingerprint_before = ""
     thr_fingerprint_after = ""

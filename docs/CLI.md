@@ -192,15 +192,18 @@ JSONLの各行は`schema_version/sequence/command/run_id/stage/completed/total`�
 | `started` / `completed` / `failed` / `interrupted` | — | — | 全コマンド（従来どおり） |
 | `run_created` | — | — | run作成時（従来どおり） |
 | `phase` | — | `name`, `device` | 負荷計測の区切り（load / inference など） |
-| `convert.tensors` / `convert.hash` | tensor / shard | `tensor` | `quantize`、探索の候補変換 |
+| `convert.tensors` / `convert.flush` / `convert.hash` | tensor / — / shard | `tensor` / `shard`, `tensors` | `quantize`、探索の候補変換 |
+| `calibrate.dataset` | — | `dataset`, `samples`, `seq_len` | 校正テキストとトークナイザの準備（初回はダウンロードを含む） |
 | `calibrate.load_teacher` | — | `snapshot` | 教師モデル読込開始 |
 | `calibrate.cache` | — | `status`（capturing / reused）, `source` | 活性値キャッシュ |
 | `capture.batches` | batch | `split`（train / heldout） | 教師の入出力収集 |
+| `calibrate.prepare` | — | `modules` | キャッシュ記録・教師解放・モジュール状態の準備 |
 | `calibrate.modules` | module | `module`、完了時`last_loss` | 対象モジュールの開始・完了 |
 | `calibrate.steps` | step | `module`, `module_index`, `modules`, `loss` | 最適化ステップ（モジュール内） |
 | `calibrate.checkpoint` | — | `checkpoint`, `cursor` | チェックポイント保存 |
 | `calibrate.evaluate` | module | `module` | train/held-out再構成誤差の算出 |
-| `calibrate.materialize` / `materialize.tensors` / `materialize.hash` | — / tensor / shard | `destination` / `tensor` | 校正済みsnapshotの書き出し |
+| `calibrate.materialize` / `materialize.tensors` / `materialize.flush` / `materialize.hash` | — / tensor / — / shard | `destination` / `tensor` / `shard`, `tensors` | 校正済みsnapshotの書き出し（`flush`はshardのディスク書込開始） |
+| `calibrate.report` | — | — | 指標・`calibration.json`・metricsの作成 |
 | `benchmark.prompts` | prompt | `prompt` | `benchmark` |
 | `quality.perplexity` / `quality.cases` | language / case | `language` / `case` | `quality` |
 | `export.tensors` | tensor | `tensor` | packed export / 復元 |
