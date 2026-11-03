@@ -1,6 +1,6 @@
 # OpenTernary TUI / UX 設計
 
-2026-11-03 / status: draft (P1〜P4実装済み。setupはWindows+RX 9070 XTで実機確認済み。次は初回リリースとP5)
+2026-11-03 / status: draft (P1〜P5実装済み。0.1.0a1をPyPIで公開済み。P5のTUIはオーナー実機での確認待ち)
 
 ## 目的
 
@@ -31,6 +31,8 @@
 | D19 | 対応範囲 | Windows（CPU/NVIDIA/AMD）、Linux（CPU/CUDA/ROCm）、WSL、macOS（MPS/CPU）すべて |
 | D20 | バージョン選択 | オーナーによる事前検証は行わない。配布元から**その場で**一覧を取得し、互換のあるものを全て提示。印は「おすすめ」「このPCで自動確認済み（インストール後のデバイス検査の記録）」 |
 | D21 | 構成の記録 | `<環境>/openternary-torch.json`。`doctor`がずれを警告、`setup --restore`で復元、P4の`update`は更新後にこれを再適用する |
+| D22 | TUIの実行方式 | ジョブは通常のCLIを子プロセスで起動（`--json --events-jsonl`）。TUIは描画と監視だけ。フォームはCLI定義から自動生成、開始前に`--dry-run`の計画を表示（失敗なら開始不可）。中止は割り込み→終了コード130、2回目で強制停止 |
+| D23 | 起動の入口 | console scriptを`openternary.cli.main:run`へ変更（引数なし＋TTYのときだけTUI。Typerの`app`と`--json`経路は不変で、Textualを読み込まない） |
 
 ### 未決事項
 
@@ -127,7 +129,7 @@ OKLCHで明度・彩度を固定し、色相だけを回す（HSVの虹と違い
 | P2 ✅ | 長時間処理の構造化イベント（追加のみ、schema_version 1のまま）。一覧は`docs/CLI.md`の「JSON・終了コード」 | オーナー実機のsmoke runで欠落・順序乱れなし（下記）。ログとの時刻突合は`logs/`未入手のため未実施 |
 | P3 ✅（オーナー確認待ち） | theme（記号のみ着色）・i18n（`OPENTERNARY_LANG`）・helpの3パネル化と内部用語除去・`doctor`/`backends`/`plan`/`plugins`の表表示・エラーの1回パネル化 | golden差分ゼロ（確認済み）、見た目をオーナー承認 |
 | P4 ✅（初回リリース待ち） | Apache-2.0、`0.1.0a1`、`release.yml`（Trusted Publishing、タグでPyPI・手動でTestPyPI）、`openternary update`（PyPI確認・1日キャッシュ・導入方法別の更新・setup構成の退避と復元・Windowsは手順表示）、`doctor`の更新通知 | タグ`v0.1.0a1`でPyPI公開、`update --check`が0.1.0a1を最新と表示 |
-| P5 | Textual App（Home / Runs / Job monitor / Compare / Doctor / Update） | Pilotテスト・snapshot・実機での監視 |
+| P5 ✅（オーナー確認待ち） | Textual App（Home / Runs / Jobs / Compare / Doctor / Update）、`services/jobs.py`（子プロセスのジョブ・イベント追跡・中止）、`services/runs.py`（一覧・削除の安全装置）、`openternary ui`と引数なし起動 | Pilotテスト・実ptyでの起動確認（済）、オーナー実機での長時間ジョブ監視 |
 | P6 | `docs/CLI.md`更新、移行表、Windows CI | DoD確認 |
 
 ## 実機計測（P2、2026-11-03）
@@ -166,3 +168,24 @@ Windows 11 / Python 3.12（uv tool環境） / AMD Radeon RX 9070 XT（ドライ�
 - `backends list`/`info`、`cache list`の`--json`では`command`が`list`/`info`になる（グループ名を含まない）。現行の契約として固定し、変更しない。
 - `NO_COLOR`では色を消し、太字などは残す（no-color.orgの仕様どおり）。パイプ出力では装飾なし。
 - 起動時のimport時間: CLI全体で約0.26秒、`textual.app`の追加分は約0.2秒（`-X importtime`）。
+
+## P5 実装と検証（2026-11-03）
+
+構成: `ui/app/app.py`（画面）、`ui/app/dialogs.py`（ジョブのフォーム・計画・名前入力での削除・終了確認）、`ui/app/catalog.py`（CLI定義→フォーム）、`services/jobs.py`、`services/runs.py`。
+
+- 実行方式（D22）: TUIのプロセスでは重い処理をしない。ジョブごとに`job.json`・`events.jsonl`・`stdout.json`（最後の行がJSON封筒）・`stderr.log`を残し、TUIを開き直しても過去と実行中のジョブを表示できる。別セッションで起動したジョブは、pidと起動時刻で同一プロセスか確かめる（pidの再利用対策）。
+- 進捗: `events.jsonl`を追記中に読み、未完成の最終行は次回に回す。段階ごとに完了数/総数・単位・詳細（lossなど）を表示し、ETAはその段階の平均速度から出す（測れるまでは表示しない）。
+- 正直さ: 実行の完了（`completed`、●）と品質の受入（`accepted`、✔）を分けて表示する。比較画面にも「結果は観察であり、品質ゲート合格だけが受入」と明記した。
+- 中止: POSIXは`start_new_session`で別グループにし、`SIGINT`をグループへ送る。WindowsはCREATE_NEW_PROCESS_GROUPで起動してCtrl+Breakを送り、子（`OPENTERNARY_BREAK_IS_INTERRUPT=1`のときだけ）がSIGBREAKを`KeyboardInterrupt`に変える。どちらもCLIの通常の中断処理（終了コード130・失敗の記録）に乗る。
+- 削除: 実行結果フォルダは`runs/`直下で`metrics.json`と`config.yaml`を持つものだけ。別プロセスが`.execution.lock`を持っていれば拒否。名前を正確に入力するまで削除ボタンは押せない。
+
+検証（このセッション、Linux）:
+
+| 確認 | 結果 |
+|---|---|
+| `tests/test_jobs.py`（10件）: 部分行の読み込み、ETA、完了・中止（130）・強制停止、別セッションの記録、実CLIの子プロセスで`doctor`の封筒とイベント、dry-runの計画、run一覧、削除の安全装置（ロック保持中は拒否） | 全件合格 |
+| `tests/test_tui.py`（12件）: 全コマンドのフォーム生成と隠す引数、引数の組み立て、数字キーとフォーカス、名前入力なしでは削除不可、フォーム→計画→開始でジョブ起動、dry-run失敗時は開始不可、実行中の終了確認、非TTYでは従来のhelp・`ui`は終了コード2、`doctor --json`でTextualを読み込まない | 全件合格 |
+| wheelを作って入れ、実際の疑似端末（pty）で引数なしの`openternary`を起動 | 画面を描画し、`q`で終了コード0 |
+| 画面の目視（130×40、日本語） | ホーム・実行結果・ジョブ（進捗とETA、中止→interrupted/130）・比較・診断・更新・フォーム・計画画面を確認 |
+
+未確認: Windows実機でのCtrl+Breakによる中止と、長時間ジョブ（本番のcalibrate）の監視。WindowsはCIで同じテストが走る。

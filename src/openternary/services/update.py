@@ -32,12 +32,18 @@ CACHE_TTL = datetime.timedelta(hours=24)
 
 
 def current_version() -> str:
-    try:
-        return metadata.version(PACKAGE)
-    except metadata.PackageNotFoundError:
-        from openternary import __version__
+    """The version of the code that is running.
 
+    An editable install's metadata is frozen when it was installed, so a `git pull` that bumps the
+    version leaves it stale; there the source's `__version__` is the truth.
+    """
+    from openternary import __version__
+
+    try:
+        installed = metadata.version(PACKAGE)
+    except metadata.PackageNotFoundError:
         return __version__
+    return __version__ if install_mode() == "editable" else installed
 
 
 def latest_from_pypi_json(payload: dict[str, Any], include_pre: bool) -> str | None:

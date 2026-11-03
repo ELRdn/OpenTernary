@@ -25,6 +25,8 @@ openternary setup        # detect the GPU and install a matching PyTorch build
 openternary doctor
 ```
 
+Run `openternary` with no arguments in a terminal (or `openternary ui`) to open the full-screen interface: runs, live job progress, compare, doctor and update in one place. Jobs started there are the ordinary CLI in a child process, so their results, exit codes and JSON are the same as from scripts. Details: [docs/CLI.md](docs/CLI.md#全画面インターフェースtui).
+
 `openternary update` checks PyPI, upgrades, and reinstalls the PyTorch build that `openternary setup` recorded. On Windows it prints the commands to run from a new terminal, because a running `openternary` cannot replace itself.
 
 ## Quickstart (core CLI)
@@ -179,7 +181,7 @@ GUI
 
 ## CLI
 
-Commands: `inspect`, `plan`, `doctor`, `backends list/info`, `quantize`, `calibrate`, `benchmark`, `quality`, `evaluate`, `compare`, `export`, `artifacts validate`, `optimize`, `plugins`, `cache list/remove`, and the compatible `cache-info` entry point.
+Commands: `ui` (full-screen interface), `inspect`, `plan`, `doctor`, `setup`, `update`, `backends list/info`, `quantize`, `calibrate`, `benchmark`, `quality`, `evaluate`, `compare`, `export`, `artifacts validate`, `optimize`, `plugins`, `cache list/remove`, and the compatible `cache-info` entry point.
 
 Model-free planning (no download, inference, or output directory):
 

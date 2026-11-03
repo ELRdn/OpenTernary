@@ -50,6 +50,7 @@ jobs:
           tests/test_cli_json_contract.py tests/test_ui_brand.py
           tests/test_progress_events.py tests/test_cli_presentation.py
           tests/test_torch_setup.py tests/test_update.py
+          tests/test_jobs.py tests/test_tui.py
 
       - name: Build wheel and sdist
         run: uv build
