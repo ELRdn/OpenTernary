@@ -90,14 +90,24 @@ def test_machine_output_is_unchanged_by_the_human_view() -> None:
     assert envelope["result"]["backends"][0]["name"] == "ternary"
 
 
-def test_errors_are_printed_once_with_context(tmp_path: Path) -> None:
-    missing = tmp_path / "missing.yaml"
+def assert_single_error_panel(err: str) -> None:
+    """One panel and nothing printed outside it; independent of where long paths fold."""
+    lines = [line for line in err.splitlines() if line.strip()]
+    assert sum(line.lstrip().startswith(("╭", "┌")) for line in lines) == 1, err  # exactly one panel
+    assert all(line.lstrip()[0] in "╭┌│╰└" for line in lines), err  # no second, plain echo
+
+
+@pytest.mark.parametrize("depth", [1, 19, 40, 77])  # long paths fold inside the panel (Windows runners)
+def test_errors_are_printed_once_with_context(tmp_path: Path, depth: int) -> None:
+    missing = tmp_path / ("d" * depth) / "missing.yaml"
     result = cli("inspect", "--config", str(missing))
     err = result.stderr.decode("utf-8")
     assert result.returncode == 2
-    assert err.count(str(missing.name)) == 1, err  # one panel, no second plain echo
-    assert "Config file not found" in err
     assert result.stdout == b""
+    assert_single_error_panel(err)
+    assert "Config file not found" in err
+    unfolded = "".join(line.strip().strip("│").strip() for line in err.splitlines())
+    assert "missing.yaml" in unfolded
 
 
 def test_context_becomes_the_json_error_when_there_is_no_exception() -> None:
