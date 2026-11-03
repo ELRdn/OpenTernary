@@ -150,6 +150,17 @@ OKLCHで明度・彩度を固定し、色相だけを回す（HSVの虹と違い
 - 書き出し中のRSSはコンソールログで約18.6GB。メモリの少ないPCでは書き出しが最も厳しい段階になりうる。
 - 本番設定（50ステップ・32サンプル × 128トークン）の所要は、モジュール最適化が計算量にほぼ比例すると仮定して、このPCのCPUで**おおよそ5〜7時間（推測、未計測）**。
 
+## setupの実機確認（2026-11-03、オーナーPC）
+
+Windows 11 / Python 3.12（uv tool環境） / AMD Radeon RX 9070 XT（ドライバ 32.0.32015.7029）＋Ryzen内蔵GPU。
+
+- 検出: RX 9070 XTは`DEV_7550`から`gfx1201`、内蔵GPUは`gfx1036`（Raphael）。単体GPUを先に表示。
+- 配布元: AMD `stable.repo.amd.com/rocm/whl-next`から、torch 2.11.0〜2.14.0（rocm10.0.0 / 10.1.0）の一覧を取得。cp312のwin_amd64のみ。
+- インストール: `torch[device-all]==2.14.0+rocm10.1.0`＋`torchvision==0.29.0a0+rocm10.1.0`。66パッケージで約6分。`device-all`は全GPU系統のカーネルを入れていた → 既定を`device-<gfx>`（AMDが個別パッケージ`amd-torch-device-<gfx>`を公開している場合）に変更。
+- 動作確認: 実デバイスでFP32・BF16の行列積に合格（`device_name: AMD Radeon RX 9070 XT`）。`doctor`に`PyTorch: 2.14.0+rocm10.1.0 · rocm · amd ✔ passed`。
+- 判明して直したこと: 再実行時に確認済みの2.14.0を未確認の2.13.0へ置き換える提案をしていた → このPCで確認済みの版を最優先にし、入っている版が確認済みなら何もしない。
+- 未確認: NVIDIA（Windows/Linux）、Linux/WSLのROCm、macOS（MPS）。いずれも実機での確認はまだない。
+
 ## 既知の事実（P1で判明）
 
 - `backends list`/`info`、`cache list`の`--json`では`command`が`list`/`info`になる（グループ名を含まない）。現行の契約として固定し、変更しない。
