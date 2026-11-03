@@ -430,13 +430,6 @@ M: dict[str, dict[str, str]] = {
     },
     "tui.baseline": {"en": "Baseline", "ja": "基準"},
     "tui.candidate": {"en": "Candidate", "ja": "候補"},
-    "tui.pick_run": {"en": "Select a run", "ja": "実行結果を選択"},
-    "tui.require_acceptance": {
-        "en": "Fail unless the quality gate accepts (--require-acceptance)",
-        "ja": "品質ゲートに合格しなければ失敗にする（--require-acceptance）",
-    },
-    "tui.compare_go": {"en": "Compare…", "ja": "比較…"},
-    "tui.compare_pick_two": {"en": "Choose two different runs.", "ja": "異なる2つの実行結果を選んでください。"},
     "tui.probe_runtime": {"en": "Probe runtime…", "ja": "実機で確認…"},
     "tui.setup_torch": {"en": "Set up PyTorch…", "ja": "PyTorchを導入…"},
     "tui.check_now": {"en": "Check now", "ja": "今すぐ確認"},
@@ -447,6 +440,75 @@ M: dict[str, dict[str, str]] = {
     },
     "tui.quit_leave": {"en": "Quit, keep running", "ja": "終了（実行は続ける）"},
     "tui.quit_stop": {"en": "Stop jobs and quit", "ja": "ジョブを止めて終了"},
+    "tui.commands": {"en": "commands", "ja": "コマンド"},
+    "tui.prompt_placeholder": {
+        "en": "Type / for commands  (↑↓ choose · Enter run · Tab complete · Esc close)",
+        "ja": "/ でコマンド一覧（↑↓ 選択・Enter 実行・Tab 補完・Esc 閉じる）",
+    },
+    "tui.filter": {"en": "Type to filter", "ja": "入力して絞り込み"},
+    "tui.pick_command": {
+        "en": "Choose what to run. ↑↓ to move, Enter to choose.",
+        "ja": "実行するコマンドを選んでください。↑↓で移動、Enterで決定。",
+    },
+    "tui.start_hint": {"en": "available once the plan checks pass", "ja": "計画の確認が通ると選べます"},
+    "tui.tip.new": {"en": "choose a command and start a job", "ja": "コマンドを選んでジョブを始める"},
+    "tui.tip.runs": {
+        "en": "browse results (↑↓ at the prompt moves the list)",
+        "ja": "実行結果を見る（入力欄で↑↓を押すと一覧が動く）",
+    },
+    "tui.tip.setup": {"en": "install PyTorch for this PC", "ja": "このPCに合うPyTorchを入れる"},
+    "tui.tip.compare": {"en": "choose two runs from lists and compare them", "ja": "一覧から2つ選んで比較する"},
+    "tui.tip.baseline": {
+        "en": "in Runs: use the highlighted run as the baseline",
+        "ja": "実行結果タブ: 選択中の結果を基準にする",
+    },
+    "tui.tip.candidate": {
+        "en": "in Runs: use the highlighted run as the candidate",
+        "ja": "実行結果タブ: 選択中の結果を候補にする",
+    },
+    "tui.cmd.new": {"en": "Choose a command and start a job", "ja": "コマンドを選んでジョブを始める"},
+    "tui.cmd.compare": {"en": "Compare two runs (choose them from lists)", "ja": "2つの実行結果を比較（一覧から選ぶ）"},
+    "tui.cmd.home": {"en": "Show Home", "ja": "ホームを表示"},
+    "tui.cmd.runs": {"en": "Show run results", "ja": "実行結果を表示"},
+    "tui.cmd.jobs": {"en": "Show jobs and live progress", "ja": "ジョブと進捗を表示"},
+    "tui.cmd.doctor": {"en": "Show the environment check", "ja": "環境の診断を表示"},
+    "tui.cmd.update": {"en": "Show the update status", "ja": "更新の状況を表示"},
+    "tui.cmd.cancel": {"en": "Cancel the highlighted job", "ja": "選択中のジョブを中止"},
+    "tui.cmd.delete": {
+        "en": "Delete the highlighted run (type its name to confirm)",
+        "ja": "選択中の実行結果を削除（名前の入力で確認）",
+    },
+    "tui.cmd.baseline": {
+        "en": "Use the highlighted run as the comparison baseline",
+        "ja": "選択中の実行結果を比較の基準にする",
+    },
+    "tui.cmd.candidate": {
+        "en": "Use the highlighted run as the comparison candidate",
+        "ja": "選択中の実行結果を比較の候補にする",
+    },
+    "tui.cmd.refresh": {"en": "Reload runs, jobs and the environment check", "ja": "実行結果・ジョブ・診断を再読込"},
+    "tui.cmd.check": {"en": "Check PyPI for a newer version now", "ja": "今すぐPyPIで新しい版を確認"},
+    "help.cache_list": {
+        "en": "List the managed artifacts under a cache root.",
+        "ja": "キャッシュの場所にある管理対象のartifactを一覧する。",
+    },
+    "help.cache_remove": {
+        "en": "Remove one managed artifact after checking nothing refers to it (--execute to delete).",
+        "ja": "参照されていないことを確かめてから管理対象のartifactを1つ削除する（--executeで実行）。",
+    },
+    "help.backends_list": {
+        "en": "List backends with their installation and capability status.",
+        "ja": "backendと、その導入・対応状況を一覧する。",
+    },
+    "help.backends_info": {
+        "en": "Show one backend's installation and capability details.",
+        "ja": "1つのbackendの導入・対応状況の詳細を表示する。",
+    },
+    "help.artifacts_validate": {
+        "en": "Check an artifact's manifest and file integrity (not model quality).",
+        "ja": "artifactのmanifestとファイルの整合性を検査する（モデルの品質ではない）。",
+    },
+    "tui.start_ready": {"en": "Enter to start", "ja": "Enterで開始"},
 }
 
 

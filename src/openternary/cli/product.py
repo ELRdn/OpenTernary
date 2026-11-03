@@ -28,14 +28,14 @@ def display(result: dict[str, Any], kind: str = "generic") -> None:
     render(console, kind, result)
 
 
-@backends.command("list", cls=Command)
+@backends.command("list", cls=Command, help=t("help.backends_list"))
 def backend_list() -> None:
     from openternary.backends import list_backends
 
     display({"backends": list_backends()}, "backends")
 
 
-@backends.command("info", cls=Command)
+@backends.command("info", cls=Command, help=t("help.backends_info"))
 def backend_info(name: str) -> None:
     from openternary.backends import get_spec
 
@@ -91,7 +91,7 @@ def doctor(
         display(result, "doctor")
 
 
-@artifacts.command("validate", cls=Command)
+@artifacts.command("validate", cls=Command, help=t("help.artifacts_validate"))
 def artifact_validate(path: Path, level: Annotated[str, typer.Option("--level")] = "files") -> None:
     from openternary.services.artifacts import validate_artifact
 

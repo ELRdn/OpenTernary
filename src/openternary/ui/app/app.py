@@ -7,6 +7,7 @@ draws. Reading state (runs, doctor, update status) happens in worker threads so 
 from __future__ import annotations
 
 import datetime
+import functools
 import os
 import time
 from pathlib import Path
@@ -20,15 +21,17 @@ from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.css.query import NoMatches
 from textual.theme import Theme
-from textual.widgets import Button, Checkbox, DataTable, Footer, Label, Select, Static, TabbedContent, TabPane
+from textual.widgets import DataTable, Footer, Label, Static, TabbedContent, TabPane
 
 from openternary import __version__
 from openternary.services import jobs as jobsvc
 from openternary.services import runs as runsvc
 from openternary.ui import brand
 from openternary.ui.app import catalog
-from openternary.ui.app.dialogs import Choice, JobForm, PlanScreen, TypedConfirm
+from openternary.ui.app.dialogs import Choice, JobForm, Picker, PlanScreen, TypedConfirm, command_items
+from openternary.ui.app.widgets import Command, CommandBar, Item
 from openternary.ui.i18n import t
 from openternary.ui.theme import badge
 
@@ -49,6 +52,20 @@ YORU = Theme(
 
 TABS = ("home", "runs", "jobs", "compare", "doctor", "update")
 FPS = 12
+
+
+def tolerant(method: Any) -> Any:
+    """For updates driven by timers and worker threads: before the panes are composed or while
+    the app is shutting down, their widgets may be missing, and then there is nothing to update."""
+
+    @functools.wraps(method)
+    def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
+        try:
+            return method(self, *args, **kwargs)
+        except NoMatches:
+            return None
+
+    return wrapper
 
 
 def reduced_motion() -> bool:
@@ -85,6 +102,17 @@ def kv(rows: list[tuple[str, RenderableType | str | None]]) -> Table:
     return table
 
 
+def tips(*rows: tuple[str, str]) -> Text:
+    """Muted hint lines in the style of a coding-agent CLI: /command  what it does."""
+    out = Text()
+    for index, (name, key) in enumerate(rows):
+        if index:
+            out.append("\n")
+        out.append(f"/{name}".ljust(12), style=brand.ACCENT)
+        out.append(t(key), style=brand.MUTED)
+    return out
+
+
 # --- Home ---------------------------------------------------------------------------------------
 class Mark(Static):
     """The tomoe symbol, turning clockwise (owner decision D17) unless motion is reduced."""
@@ -111,10 +139,9 @@ class Home(Vertical):
             yield Mark(animate=self.app.motion, id="mark")  # type: ignore[attr-defined]
             with Vertical(id="home-info"):
                 yield Static(id="home-summary")
-                with Horizontal(classes="buttons left"):
-                    yield Button(t("tui.new_job"), id="home-new", variant="primary")
-                    yield Button(t("tui.tab.runs"), id="home-runs")
-                    yield Button(t("tui.tab.doctor"), id="home-doctor")
+                yield Static(
+                    tips(("new", "tui.tip.new"), ("runs", "tui.tip.runs"), ("setup", "tui.tip.setup")), id="home-tips"
+                )
 
     def on_resize(self) -> None:
         self.query_one("#banner", Static).update(brand.banner(self.size.width))
@@ -379,88 +406,53 @@ class Jobs(Vertical):
 
 # --- Compare ------------------------------------------------------------------------------------
 class Compare(Vertical):
+    """Shows the chosen pair; /compare picks what is missing from ❯ lists and opens the form."""
+
     def compose(self) -> ComposeResult:
         yield Static(t("tui.compare_intro"), classes="muted")
-        yield Label(t("tui.baseline"), classes="section")
-        yield Select([], id="cmp-baseline", prompt=t("tui.pick_run"))
-        yield Label(t("tui.candidate"), classes="section")
-        yield Select([], id="cmp-candidate", prompt=t("tui.pick_run"))
-        yield Checkbox(t("tui.require_acceptance"), id="cmp-require")
-        with Horizontal(classes="buttons left"):
-            yield Button(t("tui.compare_go"), id="cmp-go", variant="primary")
-        yield Static("", id="cmp-error", classes="error")
+        yield Static("", id="cmp-picks")
+        yield Static(
+            tips(("compare", "tui.tip.compare"), ("baseline", "tui.tip.baseline"), ("candidate", "tui.tip.candidate")),
+            id="cmp-tips",
+        )
 
-    def show(self, runs: list[runsvc.RunInfo]) -> None:
-        options = [(f"{run.name}  ({run.kind or '—'} · {run.status})", str(run.path)) for run in runs]
-        for ident in ("#cmp-baseline", "#cmp-candidate"):
-            select = self.query_one(ident, Select)
-            value = select.value
-            select.set_options(options)
-            if value is not Select.NULL and any(v == value for _, v in options):
-                select.value = value
+    def on_mount(self) -> None:
+        self.picks: dict[str, runsvc.RunInfo | None] = {"baseline": None, "candidate": None}
+        self._show_picks()
 
-    def pick(self, which: str, run: runsvc.RunInfo) -> None:
-        self.query_one(f"#cmp-{which}", Select).value = str(run.path)
+    def pick(self, which: str, run: runsvc.RunInfo | None) -> None:
+        self.picks[which] = run
+        self._show_picks()
 
-    @on(Button.Pressed, "#cmp-go")
-    def _go(self) -> None:
-        baseline = self.query_one("#cmp-baseline", Select).value
-        candidate = self.query_one("#cmp-candidate", Select).value
-        if baseline is Select.NULL or candidate is Select.NULL or baseline == candidate:
-            self.query_one("#cmp-error", Static).update(t("tui.compare_pick_two"))
-            return
-        self.query_one("#cmp-error", Static).update("")
-        values = {
-            "baseline": baseline,
-            "quantized": candidate,
-            "require_acceptance": self.query_one("#cmp-require", Checkbox).value,
-        }
-        self.app.new_job("compare", values)  # type: ignore[attr-defined]
+    def _show_picks(self) -> None:
+        rows: list[tuple[str, RenderableType | str | None]] = [
+            (t(f"tui.{which}"), Text.assemble(badge(run.status), f"  {run.name}") if run else None)
+            for which, run in self.picks.items()
+        ]
+        self.query_one("#cmp-picks", Static).update(kv(rows))
 
 
 # --- Doctor / Update ----------------------------------------------------------------------------
 class Doctor(VerticalScroll):
     def compose(self) -> ComposeResult:
-        with Horizontal(classes="buttons left"):
-            yield Button(t("tui.refresh"), id="doc-refresh")
-            yield Button(t("tui.probe_runtime"), id="doc-probe")
-            yield Button(t("tui.setup_torch"), id="doc-setup", variant="primary")
+        yield Static(
+            tips(("probe", "tui.probe_runtime"), ("setup", "tui.setup_torch"), ("refresh", "tui.refresh")),
+            classes="pane-tips",
+        )
         yield Static(t("tui.loading"), id="doctor-view")
 
     def show(self, renderable: RenderableType) -> None:
         self.query_one("#doctor-view", Static).update(renderable)
 
-    @on(Button.Pressed, "#doc-refresh")
-    def _refresh(self) -> None:
-        self.app.refresh_doctor()  # type: ignore[attr-defined]
-
-    @on(Button.Pressed, "#doc-probe")
-    def _probe(self) -> None:
-        self.app.new_job("doctor", {"probe_runtime": True})  # type: ignore[attr-defined]
-
-    @on(Button.Pressed, "#doc-setup")
-    def _setup(self) -> None:
-        self.app.new_job("setup")  # type: ignore[attr-defined]
-
 
 class Update(VerticalScroll):
     def compose(self) -> ComposeResult:
-        with Horizontal(classes="buttons left"):
-            yield Button(t("tui.check_now"), id="upd-check")
-            yield Button(t("tui.update_now"), id="upd-go", variant="primary")
+        yield Static(tips(("check", "tui.check_now"), ("upgrade", "tui.update_now")), classes="pane-tips")
         yield Static(t("tui.loading"), id="update-view")
 
     def show(self, renderable: RenderableType, can_update: bool) -> None:
         self.query_one("#update-view", Static).update(renderable)
-        self.query_one("#upd-go", Button).disabled = not can_update
-
-    @on(Button.Pressed, "#upd-check")
-    def _check(self) -> None:
-        self.app.refresh_update(force=True)  # type: ignore[attr-defined]
-
-    @on(Button.Pressed, "#upd-go")
-    def _go(self) -> None:
-        self.app.new_job("update")  # type: ignore[attr-defined]
+        self.can_update = can_update  # /upgrade still shows the plan; this only informs the hint
 
 
 # --- App ----------------------------------------------------------------------------------------
@@ -474,9 +466,12 @@ class OpenTernaryApp(App[None]):
     .error { color: $error; }
     .warn { color: $warning; margin-top: 1; }
     .section { margin-top: 1; color: $text-muted; text-style: bold; }
-    .buttons { height: auto; margin-top: 1; align-horizontal: right; }
-    .buttons.left { align-horizontal: left; margin-top: 0; margin-bottom: 1; }
-    .buttons Button { margin-right: 1; }
+    .pane-tips { margin-bottom: 1; }
+    #home-tips { margin-top: 1; }
+    #cmp-picks, #cmp-tips { margin-top: 1; }
+    Picker Menu { max-height: 20; margin-top: 1; }
+    #actions { margin-top: 1; }
+    #filter { border: none; background: $panel; padding: 0 1; }
     .detail { border-left: tall $panel; padding: 0 0 0 2; }
     #banner { height: auto; margin-bottom: 1; }
     #home-body { height: auto; }
@@ -492,7 +487,6 @@ class OpenTernaryApp(App[None]):
     #job-head { height: auto; }
     #job-stages { height: auto; margin-top: 1; }
     #job-log-box { height: 1fr; }
-    Compare Select { width: 100%; max-width: 110; }
     ModalScreen { align: center middle; background: $background 70%; }
     .dialog { width: 80; max-width: 95%; height: auto; max-height: 90%; border: round $primary;
               background: $surface; padding: 1 2; }
@@ -506,8 +500,10 @@ class OpenTernaryApp(App[None]):
     #preview-box { height: auto; max-height: 22; border: round $panel; padding: 0 1; margin-top: 1; }
     """
     BINDINGS = [
-        Binding("n", "new_job", t("tui.new_job")),
-        Binding("q", "quit_app", t("tui.quit")),
+        Binding("slash", "prompt", t("tui.commands"), key_display="/"),
+        Binding("ctrl+q", "quit_app", t("tui.quit"), priority=True),
+        Binding("n", "new_job", t("tui.new_job"), show=False),
+        Binding("q", "quit_app", t("tui.quit"), show=False),
         *[Binding(str(i + 1), f"tab('{name}')", t(f"tui.tab.{name}"), show=False) for i, name in enumerate(TABS)],
     ]
 
@@ -541,6 +537,7 @@ class OpenTernaryApp(App[None]):
                 yield Doctor()
             with TabPane(t("tui.tab.update"), id="update"):
                 yield Update()
+        yield CommandBar(self.commands(), placeholder=t("tui.prompt_placeholder"))
         yield Footer()
 
     def on_mount(self) -> None:
@@ -551,33 +548,80 @@ class OpenTernaryApp(App[None]):
         self.refresh_jobs()
         self.refresh_doctor()
         self.refresh_update(force=False)
-        self.set_interval(0.5, self.refresh_jobs)
+        self.ticker = self.set_interval(0.5, self.refresh_jobs)
         self.run_worker(self.manager.prune, thread=True, group="prune")  # keep the newest 200 records
+        self.query_one(CommandBar).input.focus()
 
-    # navigation
+    # commands: everything is chosen from the ❯ prompt (/ lists them) instead of buttons
+    def commands(self) -> list[Command]:
+        def job(spec: catalog.Spec) -> Command:
+            return Command(spec.slash, spec.help, lambda words: self.run_command(spec, words))
+
+        specs = [s for s in catalog.specs() if s.name != "compare"]
+        primary = [s for s in specs if s.panel != t("panel.environment") and " " not in s.name]
+        rest = [s for s in specs if s not in primary]
+
+        def tab(name: str) -> Command:
+            return Command(name, t(f"tui.cmd.{name}"), lambda words: self.action_tab(name))
+
+        return [
+            Command("new", t("tui.cmd.new"), lambda words: self.new_job()),
+            *[job(s) for s in primary],
+            Command("compare", t("tui.cmd.compare"), lambda words: self.compare_flow()),
+            *[tab(name) for name in TABS if name != "compare"],  # /compare starts a comparison
+            Command("cancel", t("tui.cmd.cancel"), lambda words: self.query_one(Jobs).action_cancel()),
+            Command("delete", t("tui.cmd.delete"), lambda words: self.query_one(Runs).action_delete()),
+            Command("baseline", t("tui.cmd.baseline"), lambda words: self.query_one(Runs).action_baseline()),
+            Command("candidate", t("tui.cmd.candidate"), lambda words: self.query_one(Runs).action_candidate()),
+            Command("refresh", t("tui.cmd.refresh"), lambda words: self.refresh_all()),
+            Command("check", t("tui.cmd.check"), lambda words: self.refresh_update(force=True)),
+            *[job(s) for s in rest],
+            Command("quit", t("tui.quit"), lambda words: self.action_quit_app()),
+        ]
+
+    def run_command(self, spec: catalog.Spec, words: list[str]) -> None:
+        """``/quantize`` opens its form; ``/quantize --config x.yaml`` goes straight to the plan."""
+        if not words:
+            presets = {"doctor": {"probe_runtime": True}}.get(spec.name)
+            self.new_job(spec.name, presets)
+            return
+        typed = None
+        rule = catalog.DESTRUCTIVE.get(spec.path)
+        if rule and f"--{rule[0]}" in words:
+            typed = Path(words[-1]).name
+        self.plan(spec, [*spec.path, *words], typed)
+
+    def action_prompt(self) -> None:
+        bar = self.query_one(CommandBar)
+        bar.input.focus()
+        bar.input.value = "/"
+        bar.input.cursor_position = 1
+
     def action_tab(self, name: str) -> None:
         self.query_one("#tabs", TabbedContent).active = name
 
-    @on(TabbedContent.TabActivated)
-    def _tab_activated(self, event: TabbedContent.TabActivated) -> None:
-        """Put the keyboard on the tab's main list so its keys (delete, cancel, …) work at once."""
-        target = {"runs": "#runs-table", "jobs": "#jobs-table"}.get(event.pane.id or "")
-        for widget in self.query(target) if target else ():  # absent while the app shuts down
-            widget.focus()
+    @on(CommandBar.Navigate)
+    def _navigate(self, event: CommandBar.Navigate) -> None:
+        """↑↓ at the prompt (with no command list open) move through the current tab."""
+        active = self.query_one("#tabs", TabbedContent).active
+        table = {"runs": "#runs-table", "jobs": "#jobs-table"}.get(active)
+        if table:
+            widget = self.query_one(table, DataTable)
+            if widget.row_count:
+                widget.move_cursor(row=max(0, min(widget.row_count - 1, widget.cursor_row + event.delta)))
+        elif active in ("doctor", "update"):
+            self.query_one(Doctor if active == "doctor" else Update).scroll_relative(y=event.delta * 3)
 
-    @on(Button.Pressed, "#home-new")
     def action_new_job(self) -> None:
         self.new_job()
 
-    @on(Button.Pressed, "#home-runs")
-    def _home_runs(self) -> None:
-        self.action_tab("runs")
-
-    @on(Button.Pressed, "#home-doctor")
-    def _home_doctor(self) -> None:
-        self.action_tab("doctor")
+    def refresh_all(self) -> None:
+        self.refresh_runs()
+        self.refresh_doctor()
+        self.refresh_jobs()
 
     # home summary
+    @tolerant
     def _home(self) -> None:
         for home in self.query(Home):  # results can land while the app is closing
             home.show(self.summary)
@@ -588,12 +632,12 @@ class OpenTernaryApp(App[None]):
         runs = runsvc.list_runs(self.runs_root)
         self.call_from_thread(self._show_runs, runs)
 
+    @tolerant
     def _show_runs(self, runs: list[runsvc.RunInfo]) -> None:
         if not self.query(Runs):  # closing
             return
         self.run_list = runs
         self.query_one(Runs).show(self.runs_root, runs)
-        self.query_one(Compare).show(runs)
         self.summary["runs"] = t("tui.runs_count", count=len(runs), path=str(self.runs_root))
         if runs:
             last = runs[0]
@@ -618,7 +662,49 @@ class OpenTernaryApp(App[None]):
         self.query_one(Compare).pick(which, run)
         self.notify(t(f"tui.picked_{which}", name=run.name))
 
+    def run_items(self, exclude: Path | None = None) -> list[Item]:
+        return [
+            Item(str(run.path), short(run.name), f"{run.kind or '—'} · {run.status} · {ago(run.started)}")
+            for run in self.run_list
+            if run.path != exclude
+        ]
+
+    def compare_flow(self) -> None:
+        """Choose the baseline and the candidate from ❯ lists (skipping any already chosen), then the form."""
+        self.action_tab("compare")
+        picks = self.query_one(Compare).picks
+        by_path = {str(run.path): run for run in self.run_list}
+
+        def finish() -> None:
+            base, cand = picks["baseline"], picks["candidate"]
+            if base and cand:
+                self.new_job("compare", {"baseline": str(base.path), "quantized": str(cand.path)})
+
+        def got(which: str, then: Any) -> Any:
+            def receive(choice: str | None) -> None:
+                if choice is None:
+                    return
+                self.query_one(Compare).pick(which, by_path[choice])
+                then()
+
+            return receive
+
+        def ask_candidate() -> None:
+            if picks["candidate"] is None or picks["candidate"] == picks["baseline"]:
+                exclude = picks["baseline"].path if picks["baseline"] else None
+                self.push_screen(Picker(t("tui.candidate"), self.run_items(exclude)), got("candidate", finish))
+            else:
+                finish()
+
+        if not self.run_list:
+            self.notify(t("tui.no_runs", path=str(self.runs_root)), severity="warning")
+        elif picks["baseline"] is None:
+            self.push_screen(Picker(t("tui.baseline"), self.run_items()), got("baseline", ask_candidate))
+        else:
+            ask_candidate()
+
     # jobs
+    @tolerant
     def refresh_jobs(self) -> None:
         if not self.query(Jobs):  # closing
             return
@@ -637,20 +723,28 @@ class OpenTernaryApp(App[None]):
         self._home()
 
     def new_job(self, command: str | None = None, values: dict[str, Any] | None = None) -> None:
-        def planned(choice: tuple[catalog.Spec, list[str], str | None] | None) -> None:
-            if choice is None:
-                return
-            spec, args, typed = choice
+        """No command: choose one from a ❯ list first. Then the form, then the plan."""
+        if command is None:
 
-            def confirmed(start: bool | None) -> None:
-                if start:
-                    self.start_job([*args, "--yes"] if spec.confirm else args)
-                else:  # back to the form with what was typed
-                    self.new_job(spec.name)
+            def chosen(name: str | None) -> None:
+                if name:
+                    self.new_job(name)
 
-            self.push_screen(PlanScreen(spec, args, typed), confirmed)
+            self.push_screen(Picker(t("tui.new_job"), command_items(), t("tui.pick_command")), chosen)
+            return
 
-        self.push_screen(JobForm(command, values), planned)
+        def filled(choice: tuple[catalog.Spec, list[str], str | None] | None) -> None:
+            if choice is not None:
+                self.plan(*choice)
+
+        self.push_screen(JobForm(command, values), filled)
+
+    def plan(self, spec: catalog.Spec, args: list[str], typed: str | None = None) -> None:
+        def confirmed(start: bool | None) -> None:
+            if start:
+                self.start_job([*args, "--yes"] if spec.confirm else args)
+
+        self.push_screen(PlanScreen(spec, args, typed), confirmed)
 
     def start_job(self, args: list[str]) -> jobsvc.Job:
         job = self.manager.start(args)
@@ -665,10 +759,10 @@ class OpenTernaryApp(App[None]):
         if job.status != "running":
             return
         if job.cancel_requested:
-            buttons = [("force", t("tui.force_stop"), "error"), ("back", t("tui.back"), "default")]
+            items = [Item("force", t("tui.force_stop"), tone=brand.ERR), Item("back", t("tui.back"), "esc")]
             message = t("tui.force_message")
         else:
-            buttons = [("cancel", t("tui.cancel_job"), "warning"), ("back", t("tui.back"), "default")]
+            items = [Item("cancel", t("tui.cancel_job"), tone=brand.WARN), Item("back", t("tui.back"), "esc")]
             message = t("tui.cancel_message")
 
         def chosen(answer: str | None) -> None:
@@ -676,7 +770,7 @@ class OpenTernaryApp(App[None]):
                 self.manager.cancel(job, force=answer == "force")
                 self.refresh_jobs()
 
-        self.push_screen(Choice(t("tui.cancel_job"), message, buttons), chosen)
+        self.push_screen(Choice(t("tui.cancel_job"), message, items), chosen)
 
     # doctor / update
     @work(thread=True, exclusive=True, group="doctor")
@@ -696,6 +790,7 @@ class OpenTernaryApp(App[None]):
             line = Text.assemble(torch + backend + "  ", badge(status or "not_run"))
         self.call_from_thread(self._show_doctor, render.doctor(result), line)
 
+    @tolerant
     def _show_doctor(self, renderable: RenderableType, torch: RenderableType) -> None:
         for pane in self.query(Doctor):  # absent while closing
             pane.show(renderable)
@@ -714,6 +809,7 @@ class OpenTernaryApp(App[None]):
         plan = upd.plan_upgrade(mode, has_profile=False, uv=upd.find_uv())
         self.call_from_thread(self._show_update, status, plan)
 
+    @tolerant
     def _show_update(self, status: Any, plan: Any) -> None:
         if status.error:
             state = Text(t("update.check_failed"), style=brand.WARN)
@@ -742,6 +838,11 @@ class OpenTernaryApp(App[None]):
         self._home()
 
     # quit
+    def exit(self, *args: Any, **kwargs: Any) -> None:  # type: ignore[override]
+        if getattr(self, "ticker", None) is not None:
+            self.ticker.stop()  # no more job polling while the screens are torn down
+        super().exit(*args, **kwargs)
+
     def action_quit_app(self) -> None:
         running = self.manager.running()
         if not running:
@@ -756,9 +857,9 @@ class OpenTernaryApp(App[None]):
                     self.manager.cancel(job)
                 self.exit()
 
-        buttons = [
-            ("leave", t("tui.quit_leave"), "primary"),
-            ("stop", t("tui.quit_stop"), "warning"),
-            ("back", t("tui.back"), "default"),
+        items = [
+            Item("leave", t("tui.quit_leave")),
+            Item("stop", t("tui.quit_stop"), tone=brand.WARN),
+            Item("back", t("tui.back"), "esc"),
         ]
-        self.push_screen(Choice(t("tui.quit"), t("tui.quit_running", count=len(running)), buttons), chosen)
+        self.push_screen(Choice(t("tui.quit"), t("tui.quit_running", count=len(running)), items), chosen)

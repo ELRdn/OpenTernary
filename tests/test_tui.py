@@ -12,12 +12,13 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from textual.widgets import Button, DataTable, Input, TabbedContent
+from textual.widgets import DataTable, Input, TabbedContent
 
 from openternary.services import jobs as jobsvc
 from openternary.ui.app import catalog
 from openternary.ui.app.app import OpenTernaryApp, short
-from openternary.ui.app.dialogs import Choice, JobForm, PlanScreen, TypedConfirm
+from openternary.ui.app.dialogs import Choice, JobForm, Picker, PlanScreen, TypedConfirm
+from openternary.ui.app.widgets import Command, CommandBar, Menu, rank
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -123,15 +124,77 @@ async def until(pilot: Any, condition: Any, timeout: float = 15.0) -> None:
         await pilot.pause(0.05)
 
 
-def test_number_keys_switch_tabs_and_focus_the_list(app_factory: Any) -> None:
+KEYS = {"/": "slash", " ": "space", "-": "minus", ".": "full_stop", "_": "underscore", ":": "colon"}
+
+
+async def type_text(pilot: Any, text: str) -> None:
+    for char in text:
+        await pilot.press(KEYS.get(char, char))
+
+
+def bar(app: OpenTernaryApp) -> CommandBar:
+    return app.query_one(CommandBar)
+
+
+async def command(app: OpenTernaryApp, pilot: Any, text: str) -> None:
+    """Type a command at the ❯ prompt and press Enter, as a person would."""
+    await type_text(pilot, text)
+    await pilot.press("enter")
+
+
+def menu_ids(menu: Menu) -> list[str]:
+    return [item.id for item in menu.items]
+
+
+async def choose(pilot: Any, menu: Menu, item_id: str) -> None:
+    """Move the ❯ to ``item_id`` with the arrow keys and press Enter."""
+    menu.focus()
+    await until(pilot, lambda: menu.has_focus)
+    while menu.current is None or menu.current.id != item_id:
+        await pilot.press("down")
+    await pilot.press("enter")
+
+
+def test_rank_puts_prefix_matches_first() -> None:
+    commands = [Command(n, d, lambda words: None) for n, d in (("cancel", ""), ("calibrate", ""), ("upgrade", "x"))]
+    assert [c.name for c in rank(commands, "ca")] == ["cancel", "calibrate"]
+    assert [c.name for c in rank(commands, "rad")] == ["upgrade"]  # substring of the name
+    assert len(rank(commands, "")) == 3
+
+
+def test_prompt_has_focus_and_slash_lists_commands(app_factory: Any) -> None:
+    async def scenario(app: OpenTernaryApp, pilot: Any) -> None:
+        prompt = bar(app).input
+        assert prompt.has_focus  # the ❯ prompt is where you start, like a coding-agent CLI
+        await type_text(pilot, "/")
+        await until(pilot, lambda: bar(app).is_open)
+        ids = menu_ids(bar(app).menu)
+        assert ids[0] == "new" and {"calibrate", "compare", "runs", "probe", "upgrade", "cache:remove"} <= set(ids)
+        await type_text(pilot, "cal")
+        await until(pilot, lambda: menu_ids(bar(app).menu)[:1] == ["calibrate"])
+        await pilot.press("tab")  # completes the highlighted command
+        await until(pilot, lambda: prompt.value == "/calibrate ")
+        assert not bar(app).is_open  # typing arguments now
+        await pilot.press("escape")
+        await until(pilot, lambda: prompt.value == "")
+
+    run(app_factory(), scenario)
+
+
+def test_slash_commands_switch_tabs_and_arrows_move_the_list(app_factory: Any, tmp_path: Path) -> None:
+    make_run(tmp_path / "runs", "2026-11-01_a")
+    make_run(tmp_path / "runs", "2026-11-02_b")
+
     async def scenario(app: OpenTernaryApp, pilot: Any) -> None:
         tabs = app.query_one("#tabs", TabbedContent)
-        assert tabs.active == "home"
-        for key, name in zip("234561", ("runs", "jobs", "compare", "doctor", "update", "home"), strict=True):
-            await pilot.press(key)
+        for name in ("jobs", "doctor", "update", "home", "runs"):
+            await command(app, pilot, f"/{name}")
             await until(pilot, lambda name=name: tabs.active == name)
-        await pilot.press("2")
-        await until(pilot, lambda: app.focused is app.query_one("#runs-table"))
+        table = app.query_one("#runs-table", DataTable)
+        await until(pilot, lambda: table.row_count == 2)
+        assert bar(app).input.has_focus and table.cursor_row == 0
+        await pilot.press("down")  # no command list open: ↑↓ move the current tab's list
+        await until(pilot, lambda: table.cursor_row == 1)
 
     run(app_factory(), scenario)
 
@@ -140,43 +203,46 @@ def test_deleting_a_run_needs_its_exact_name(app_factory: Any, tmp_path: Path) -
     run_dir = make_run(tmp_path / "runs", "2026-11-03_demo")
 
     async def scenario(app: OpenTernaryApp, pilot: Any) -> None:
-        await pilot.press("2")
-        await until(pilot, lambda: app.focused is app.query_one("#runs-table"))
-        assert app.query_one("#runs-table", DataTable).row_count == 1
-        await pilot.press("x")
-        await until(pilot, lambda: isinstance(app.screen, TypedConfirm) and bool(app.screen.query("#delete")))
-        delete = app.screen.query_one("#delete", Button)
-        app.screen.query_one("#typed", Input).value = "2026-11-03"
-        await pilot.pause(0.1)
-        assert delete.disabled
+        await command(app, pilot, "/runs")
+        await until(pilot, lambda: app.query_one("#runs-table", DataTable).row_count == 1)
+        await command(app, pilot, "/delete")
+        await until(pilot, lambda: isinstance(app.screen, TypedConfirm) and bool(app.screen.query("#actions")))
+        menu = app.screen.query_one("#actions", Menu)
+        assert menu.items[0].disabled and menu.current is not None and menu.current.id == "back"
+        await type_text(pilot, "2026-11-03")
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        assert isinstance(app.screen, TypedConfirm) and run_dir.exists()  # a partial name does nothing
         await pilot.press("escape")
         await until(pilot, lambda: not isinstance(app.screen, TypedConfirm))
-        assert run_dir.exists()  # backing out deletes nothing
-        await pilot.press("x")
+        await command(app, pilot, "/delete")
         await until(pilot, lambda: isinstance(app.screen, TypedConfirm) and bool(app.screen.query("#typed")))
-        app.screen.query_one("#typed", Input).value = "2026-11-03_demo"
-        delete = app.screen.query_one("#delete", Button)
-        await until(pilot, lambda: not delete.disabled)
-        delete.press()
+        await type_text(pilot, "2026-11-03_demo")
+        menu = app.screen.query_one("#actions", Menu)
+        await until(pilot, lambda: not menu.items[0].disabled)
+        await choose(pilot, menu, "delete")
         await until(pilot, lambda: not run_dir.exists())
 
     run(app_factory(), scenario)
 
 
-def test_form_plan_and_start_launch_a_job(app_factory: Any) -> None:
+def test_new_job_picker_form_plan_and_start(app_factory: Any) -> None:
     async def scenario(app: OpenTernaryApp, pilot: Any) -> None:
-        await pilot.press("n")
+        await command(app, pilot, "/new")
+        await until(pilot, lambda: isinstance(app.screen, Picker) and bool(app.screen.query("#choices")))
+        await type_text(pilot, "insp")
+        await until(pilot, lambda: app.screen.query_one("#choices", Menu).current.id == "inspect")  # type: ignore[union-attr]
+        await pilot.press("enter")
         await until(pilot, lambda: isinstance(app.screen, JobForm) and bool(app.screen.query("#f-config")))
         app.screen.query_one("#f-config", Input).value = "configs/gemma4-e2b.yaml"
-        app.screen.query_one("#review", Button).press()
-        await until(pilot, lambda: isinstance(app.screen, PlanScreen) and bool(app.screen.query("#start")))
+        await choose(pilot, app.screen.query_one("#actions", Menu), "review")
+        await until(pilot, lambda: isinstance(app.screen, PlanScreen) and bool(app.screen.query("#actions")))
         plan = app.screen
         assert isinstance(plan, PlanScreen) and plan.args == ["inspect", "--config", "configs/gemma4-e2b.yaml"]
-        start = plan.query_one("#start", Button)
-        assert start.disabled  # never clickable before the command's own --dry-run has answered
-        await until(pilot, lambda: not start.disabled, timeout=60)
+        actions = plan.query_one("#actions", Menu)
+        await until(pilot, lambda: not actions.items[0].disabled, timeout=60)  # once the dry run has passed
         assert "dry-run" in str(plan.query_one("#preview").render())
-        start.press()
+        await choose(pilot, actions, "start")
         await until(pilot, lambda: app.query_one("#tabs", TabbedContent).active == "jobs")
         (job,) = app_factory.manager.jobs()
         assert job.args == ["inspect", "--config", "configs/gemma4-e2b.yaml"] and job.status == "running"
@@ -184,14 +250,64 @@ def test_form_plan_and_start_launch_a_job(app_factory: Any) -> None:
     run(app_factory(), scenario)
 
 
-def test_start_stays_disabled_when_the_dry_run_fails(app_factory: Any) -> None:
+def test_command_with_arguments_goes_straight_to_the_plan(app_factory: Any) -> None:
+    async def scenario(app: OpenTernaryApp, pilot: Any) -> None:
+        await command(app, pilot, "/quantize --config configs/gemma4-e2b.yaml")
+        await until(pilot, lambda: isinstance(app.screen, PlanScreen))
+        assert app.screen.args == ["quantize", "--config", "configs/gemma4-e2b.yaml"]  # type: ignore[attr-defined]
+
+    run(app_factory(), scenario)
+
+
+def test_start_is_unavailable_until_the_preview_answers(app_factory: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(PlanScreen, "_preview", lambda self: None)  # a dry run that has not answered yet
+
+    async def scenario(app: OpenTernaryApp, pilot: Any) -> None:
+        screen = PlanScreen(catalog.spec("quantize"), ["quantize", "--config", "configs/gemma4-e2b.yaml"])
+        app.push_screen(screen)
+        await until(pilot, lambda: app.screen is screen and bool(screen.query("#actions")))
+        actions = screen.query_one("#actions", Menu)
+        assert actions.items[0].disabled and actions.current is not None and actions.current.id == "back"
+        actions.focus()
+        await pilot.press("up", "enter")  # the ❯ cannot land on Start
+        await until(pilot, lambda: app.screen is not screen)
+        assert app_factory.manager.jobs() == []
+
+    run(app_factory(), scenario)
+
+
+def test_start_stays_unavailable_when_the_dry_run_fails(app_factory: Any) -> None:
     async def scenario(app: OpenTernaryApp, pilot: Any) -> None:
         screen = PlanScreen(catalog.spec("quantize"), ["quantize", "--config", "configs/missing.yaml"])
         app.push_screen(screen)
-        await until(pilot, lambda: app.screen is screen and bool(screen.query("#start")))  # mounted, not just pushed
-        assert screen.query_one("#start", Button).disabled  # until the preview has answered
+        await until(pilot, lambda: app.screen is screen and bool(screen.query("#actions")))
         await until(pilot, lambda: "exit" in str(screen.query_one("#preview").render()), timeout=60)
-        assert screen.query_one("#start", Button).disabled
+        actions = screen.query_one("#actions", Menu)
+        assert actions.items[0].disabled and actions.current is not None and actions.current.id == "back"
+        actions.focus()
+        await pilot.press("up", "enter")  # the ❯ cannot land on Start, so Enter means Back
+        await until(pilot, lambda: app.screen is not screen)
+        assert app_factory.manager.jobs() == []
+
+    run(app_factory(), scenario)
+
+
+def test_compare_picks_two_runs_from_lists(app_factory: Any, tmp_path: Path) -> None:
+    base = make_run(tmp_path / "runs", "2026-11-01_base")
+    cand = make_run(tmp_path / "runs", "2026-11-02_cand")
+
+    async def scenario(app: OpenTernaryApp, pilot: Any) -> None:
+        await until(pilot, lambda: len(app.run_list) == 2)
+        await command(app, pilot, "/compare")
+        await until(pilot, lambda: isinstance(app.screen, Picker) and bool(app.screen.query("#choices")))
+        await choose(pilot, app.screen.query_one("#choices", Menu), str(base))
+        await until(pilot, lambda: isinstance(app.screen, Picker) and app.screen.title_text == "Candidate")
+        choices = app.screen.query_one("#choices", Menu)
+        assert menu_ids(choices) == [str(cand)]  # the baseline is not offered again
+        await choose(pilot, choices, str(cand))
+        await until(pilot, lambda: isinstance(app.screen, JobForm) and bool(app.screen.query("#f-baseline")))
+        assert app.screen.query_one("#f-baseline", Input).value == str(base)
+        assert app.screen.query_one("#f-quantized", Input).value == str(cand)
 
     run(app_factory(), scenario)
 
@@ -199,9 +315,10 @@ def test_start_stays_disabled_when_the_dry_run_fails(app_factory: Any) -> None:
 def test_quitting_with_a_running_job_asks_first(app_factory: Any) -> None:
     async def scenario(app: OpenTernaryApp, pilot: Any) -> None:
         job = app.start_job(["calibrate"])
-        await pilot.press("q")
-        await until(pilot, lambda: isinstance(app.screen, Choice) and bool(app.screen.query("#back")))
-        app.screen.query_one("#back", Button).press()
+        await command(app, pilot, "/quit")
+        await until(pilot, lambda: isinstance(app.screen, Choice) and bool(app.screen.query("#actions")))
+        assert menu_ids(app.screen.query_one("#actions", Menu)) == ["leave", "stop", "back"]
+        await choose(pilot, app.screen.query_one("#actions", Menu), "back")
         await until(pilot, lambda: not isinstance(app.screen, Choice))
         assert app.is_running and app_factory.manager.refresh(job).status == "running"
 

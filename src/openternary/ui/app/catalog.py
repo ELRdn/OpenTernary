@@ -15,6 +15,9 @@ from typing import Any
 
 HIDDEN = {"json_output", "quiet", "events_jsonl", "dry_run", "yes", "help"}
 NOT_JOBS = {("ui",)}  # the TUI does not launch itself
+# Slash names that would clash with a tab of the same name: /doctor and /update show those tabs,
+# /probe and /upgrade run the commands.
+SLASH_ALIASES = {"doctor": "probe", "update": "upgrade"}
 # Commands that delete when this flag is set; the plan screen then asks for the target's name.
 DESTRUCTIVE: dict[tuple[str, ...], tuple[str, str]] = {("cache", "remove"): ("execute", "target")}
 
@@ -44,6 +47,11 @@ class Spec:
     @property
     def name(self) -> str:
         return " ".join(self.path)
+
+    @property
+    def slash(self) -> str:
+        """The name typed after ``/`` in the TUI, e.g. ``calibrate`` or ``cache:remove``."""
+        return SLASH_ALIASES.get(self.name, ":".join(self.path))
 
 
 def _field(param: Any) -> Field | None:
