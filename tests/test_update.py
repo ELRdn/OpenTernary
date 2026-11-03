@@ -100,6 +100,17 @@ def test_install_mode_detection() -> None:
     assert upd.install_mode("/home/h/project/.venv", Dist(None)) == "venv"
 
 
+def test_editable_install_reports_the_source_version_not_stale_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.undo()  # the autouse fixture pins current_version; test the real one
+    monkeypatch.setattr(upd.metadata, "version", lambda name: "0.1.0a0")  # installed before a pull
+    monkeypatch.setattr(upd, "install_mode", lambda *a, **k: "editable")
+    assert upd.current_version() == openternary.__version__
+    monkeypatch.setattr(upd, "install_mode", lambda *a, **k: "uv-tool")
+    assert upd.current_version() == "0.1.0a0"
+
+
 def test_upgrade_plans_per_install_mode() -> None:
     tool = upd.plan_upgrade("uv-tool", has_profile=True, uv="uv", platform="linux")
     assert tool.commands == [["uv", "tool", "upgrade", "openternary"]] and tool.restore and tool.automatic
