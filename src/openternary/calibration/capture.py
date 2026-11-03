@@ -6,6 +6,8 @@ import hashlib
 import pathlib
 import typing
 
+from openternary.services.reporting import progress
+
 try:
     import torch
     import torch.nn as nn
@@ -129,6 +131,7 @@ def capture_teacher_pairs(
     dataloader: list[dict[str, torch.Tensor]],  # type: ignore[type-arg]
     target_module_names: list[str],
     cache_dir: pathlib.Path,
+    split: str | None = None,
 ) -> DiskActivationCache:
     """Teacher model から input/output を hook で capture し disk に保存.
 
@@ -137,6 +140,7 @@ def capture_teacher_pairs(
         dataloader: list of {"input_ids", "attention_mask"}
         target_module_names: hook する nn.Linear の名前（model.named_modules の key）
         cache_dir: 保存先
+        split: progress label (e.g. "train" / "heldout"); reported as ``capture.batches`` detail
 
     Returns:
         DiskActivationCache
@@ -175,7 +179,9 @@ def capture_teacher_pairs(
 
     try:
         with torch.no_grad():  # type: ignore[union-attr]
+            total = len(dataloader)
             for batch_idx, batch in enumerate(dataloader):
+                progress("capture.batches", batch_idx, total, unit="batch", split=split)
                 activations.clear()
                 input_ids = batch["input_ids"].unsqueeze(0) if batch["input_ids"].dim() == 1 else batch["input_ids"]
                 attention_mask = batch.get("attention_mask")
@@ -200,6 +206,7 @@ def capture_teacher_pairs(
                 # Save per layer
                 for layer_name, data in list(activations.items()):
                     cache.save(layer_name, batch_idx, data)
+            progress("capture.batches", total, total, unit="batch", split=split)
     finally:
         for h in handles:
             h.remove()

@@ -9,6 +9,7 @@ from typing import Any
 
 from openternary.services.artifacts import member_path, validate_artifact
 from openternary.services.errors import CapabilityError
+from openternary.services.reporting import progress
 
 
 def _packed_tensors(root: Path) -> Iterator[tuple[str, Any]]:
@@ -55,7 +56,9 @@ def validate_tensors(root: Path) -> dict[str, Any]:
         from openternary.services.snapshot import SnapshotReader
 
         with SnapshotReader(root) as reader:
-            for name in reader.keys():  # noqa: SIM118 - SnapshotReader is not a mapping
+            names = list(reader.keys())
+            for index, name in enumerate(names):
+                progress("validate.tensors", index, len(names), unit="tensor", tensor=name)
                 inspect(name, reader.get_tensor(name))
     else:
         if manifest["format"] == "torchao":
@@ -64,8 +67,10 @@ def validate_tensors(root: Path) -> dict[str, Any]:
             rows = TorchAOBackend().load_weights(root)
         else:
             rows = _packed_tensors(root)
-        for name, tensor in rows:
+        for index, (name, tensor) in enumerate(rows):
+            progress("validate.tensors", index, None, unit="tensor", tensor=name)
             inspect(name, tensor)
+    progress("validate.tensors", len(found), len(found), unit="tensor")
     if not found:
         raise ValueError("artifact has no tensors")
     report_file = root / "quantization.json"

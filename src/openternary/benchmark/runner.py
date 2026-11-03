@@ -24,6 +24,7 @@ from openternary.benchmark.suites import (
 )
 from openternary.config.schema import AppConfig
 from openternary.services.identity import snapshot_identity
+from openternary.services.reporting import progress
 from openternary.services.resources import measured, phase
 
 
@@ -193,7 +194,8 @@ def run_benchmark(
     total_output_tokens = 0
     total_gen_ms = 0.0
 
-    for item in prompts:
+    for prompt_index, item in enumerate(prompts):
+        progress("benchmark.prompts", prompt_index, len(prompts), unit="prompt", prompt=item["id"])
         prompt_id = item["id"]
         prompt_text = item["prompt"]
         t0 = time.perf_counter()

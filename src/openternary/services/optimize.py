@@ -250,6 +250,14 @@ def run_search(
                         journal["gpu_seconds"] += time.monotonic() - candidate_started
                 finally:
                     save()
+                    if operation:
+                        operation.event(
+                            "search.candidates",
+                            index + 1,
+                            len(candidates),
+                            unit="candidate",
+                            detail={"status": row["status"], "folder": row["folder"]},
+                        )
                 used = sum(p.stat().st_size for p in output.rglob("*") if p.is_file())
                 if (
                     used > budget.artifact_bytes

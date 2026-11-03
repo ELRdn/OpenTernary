@@ -1,6 +1,6 @@
 # OpenTernary TUI / UX 設計
 
-2026-11-01 / status: draft (P1完了、ブランド確定・`brand.py`実装済み、次はP2)
+2026-11-03 / status: draft (P1・P2実装済み、P2の実機検証待ち。次はP3)
 
 ## 目的
 
@@ -120,7 +120,7 @@ OKLCHで明度・彩度を固定し、色相だけを回す（HSVの虹と違い
 | Phase | 内容 | 終了条件 |
 |---|---|---|
 | P1 ✅ | `--json`契約の固定（14プローブ）、ブランド部品 | golden一致・CI登録 |
-| P2 | 長時間処理（calibrate/quantize/benchmark/export）の構造化イベント（追加のみ、schema_version 1のまま） | 実機runでイベント時刻とログが一致 |
+| P2 ✅（実機検証待ち） | 長時間処理の構造化イベント（追加のみ、schema_version 1のまま）。一覧は`docs/CLI.md`の「JSON・終了コード」 | 実機runでイベント時刻とログが一致（オーナーの実run待ち） |
 | P3 | theme・i18n・helpのグループ化と内部用語除去・`doctor`等の人間向け表示・エラーパネル | golden差分ゼロ、スナップショットをオーナー承認 |
 | P4 | タグ運用・リリースworkflow・`update`（確認→計画→実行→検証→ロールバック）・起動時の更新確認 | シナリオ表をすべて通過、torchの`pip freeze`が不変 |
 | P5 | Textual App（Home / Runs / Job monitor / Compare / Doctor / Update） | Pilotテスト・snapshot・実機での監視 |

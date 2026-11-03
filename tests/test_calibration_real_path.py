@@ -602,3 +602,41 @@ def test_missing_explicit_snapshot_is_not_simulated(local_teacher, tmp_path):
     _, cfg = local_teacher
     with pytest.raises(FileNotFoundError, match="snapshot"):
         run_calibration(cfg, tmp_path / "missing", tmp_path / "run")
+
+
+def test_runner_reports_structured_progress(local_teacher, tmp_path, monkeypatch):
+    """Each long phase of a real (tiny) calibration emits --events-jsonl rows in order."""
+    import io
+
+    from openternary.services import reporting
+
+    snapshot, cfg = local_teacher
+    monkeypatch.setattr(reporting, "MIN_INTERVAL_S", 0.0)
+    stream = io.StringIO()
+    token = reporting.current.set(reporting.Operation("calibrate", stream=stream))
+    try:
+        run_calibration(cfg, snapshot, tmp_path / "run")
+    finally:
+        reporting.current.reset(token)
+    rows = [json.loads(line) for line in stream.getvalue().splitlines()]
+    stages = [r["stage"] for r in rows]
+    order = [
+        "calibrate.load_teacher",
+        "calibrate.cache",
+        "capture.batches",
+        "calibrate.modules",
+        "calibrate.steps",
+        "calibrate.checkpoint",
+        "calibrate.evaluate",
+        "calibrate.materialize",
+        "materialize.tensors",
+    ]
+    assert [stages.index(s) for s in order] == sorted(stages.index(s) for s in order)
+    assert {r["detail"]["split"] for r in rows if r["stage"] == "capture.batches"} == {"train", "heldout"}
+    modules = [r for r in rows if r["stage"] == "calibrate.modules"]
+    assert [r["completed"] for r in modules] == [0, 1, 1, 2] and {r["total"] for r in modules} == {2}
+    steps = [r for r in rows if r["stage"] == "calibrate.steps"]
+    assert len(steps) == 4  # 2 modules x 2 steps
+    assert all(isinstance(r["detail"]["loss"], float) and r["detail"]["modules"] == 2 for r in steps)
+    done = [r for r in rows if r["stage"] == "materialize.tensors"]
+    assert done[-1]["completed"] == done[-1]["total"]

@@ -24,6 +24,7 @@ from openternary.calibration.optimizer import (
     get_effective_scales,
     get_effective_threshold_ratio,
 )
+from openternary.services.reporting import milestone, progress
 from openternary.utils.device import (
     BackendInfo,
     VramBudget,
@@ -861,6 +862,7 @@ def _run_calibration_impl(
     try:
         from transformers import AutoModelForCausalLM  # type: ignore[import]
 
+        milestone("calibrate.load_teacher", snapshot=str(teacher_snapshot))
         # Try Gemma4 multimodal first, fallback to causal
         try:
             from transformers import AutoModelForImageTextToText as _AutoGemma  # type: ignore[import]
@@ -1112,6 +1114,7 @@ def _run_calibration_impl(
                     if source_integrity_ok:
                         # fingerprints and every source shard match → reuse by copying
                         print(f"[cache] Activation Cache: REUSED from --init-from {init_from}", flush=True)
+                        milestone("calibrate.cache", status="reused", source="init_from")
                         import shutil as _sh2
 
                         if not train_cache_dir.exists() or not any(train_cache_dir.iterdir()):
@@ -1160,6 +1163,7 @@ def _run_calibration_impl(
                 raise ValueError("activation cache integrity failure: shard missing, changed, or unmanifested")
             if ef_train == current_fp and ef_held == current_fp and has_all and integrity_ok:
                 print("[cache] Activation Cache: REUSED (existing output cache matches fingerprint)", flush=True)
+                milestone("calibrate.cache", status="reused", source="output")
                 reuse_possible = True
             else:
                 print(
@@ -1187,8 +1191,9 @@ def _run_calibration_impl(
             pass
     else:
         print("[cache] Activation Cache: CAPTURING (no reusable cache)", flush=True)
-        train_cache = capture_teacher_pairs(model, train_batches, target_module_names, train_cache_dir)
-        held_cache = capture_teacher_pairs(model, held_batches, target_module_names, held_cache_dir)
+        milestone("calibrate.cache", status="capturing")
+        train_cache = capture_teacher_pairs(model, train_batches, target_module_names, train_cache_dir, split="train")
+        held_cache = capture_teacher_pairs(model, held_batches, target_module_names, held_cache_dir, split="heldout")
         # Save fingerprints (include all spec section 8 inputs for provenance)
         try:
             train_cache_dir.mkdir(parents=True, exist_ok=True)
@@ -1836,6 +1841,7 @@ def _run_calibration_impl(
             print(f"[checkpoint] saved {step_path.name} ({sz} bytes, cursor {ckpt_save['module_cursor']})", flush=True)
         except Exception:
             pass
+        milestone("calibrate.checkpoint", checkpoint=step_path.name, cursor=ckpt_save.get("module_cursor"))
         # Only overwrite module path when module done or checkpoint interval
         with contextlib.suppress(Exception):
             tmp_mod = mod_path.with_suffix(mod_path.suffix + ".tmp")
@@ -1862,6 +1868,7 @@ def _run_calibration_impl(
         # Skip if already completed (e.g., resumed and already in completed dict) unless it's the active resume module
         if mname in completed_module_params and module_idx != start_module_idx:
             continue
+        progress("calibrate.modules", module_idx, len(target_module_names), unit="module", throttle=False, module=mname)
         # Load weight on demand (bounded)
         w = _load_weight(mname)
         if w is None:
@@ -2199,6 +2206,16 @@ def _run_calibration_impl(
                         initial_loss = step_loss_val
                     best_loss = min(best_loss, step_loss_val)
                     loss_history.append(step_loss_val)
+                    progress(
+                        "calibrate.steps",
+                        step_in_mod + 1,
+                        steps_per_module,
+                        unit="step",
+                        module=mname,
+                        module_index=module_idx + 1,
+                        modules=len(target_module_names),
+                        loss=step_loss_val,
+                    )
                     if (step_in_mod + 1) % ckpt_interval == 0 or (step_in_mod + 1) == steps_per_module:
                         _save_v2_checkpoint(
                             module_idx,
@@ -2397,6 +2414,16 @@ def _run_calibration_impl(
                             initial_loss = step_loss_val
                         best_loss = min(best_loss, step_loss_val)
                         loss_history.append(step_loss_val)
+                        progress(
+                            "calibrate.steps",
+                            step_in_mod + 1,
+                            steps_per_module,
+                            unit="step",
+                            module=mname,
+                            module_index=module_idx + 1,
+                            modules=len(target_module_names),
+                            loss=step_loss_val,
+                        )
                         optimizer.step()
                         # checkpoint
                         if (step_in_mod + 1) % ckpt_interval == 0 or (step_in_mod + 1) == steps_per_module:
@@ -2518,6 +2545,16 @@ def _run_calibration_impl(
                     initial_loss = step_loss_val
                 best_loss = min(best_loss, step_loss_val)
                 loss_history.append(step_loss_val)
+                progress(
+                    "calibrate.steps",
+                    step_in_mod + 1,
+                    steps_per_module,
+                    unit="step",
+                    module=mname,
+                    module_index=module_idx + 1,
+                    modules=len(target_module_names),
+                    loss=step_loss_val,
+                )
                 optimizer.step()
                 if (step_in_mod + 1) % ckpt_interval == 0 or (step_in_mod + 1) == steps_per_module:
                     _save_v2_checkpoint(
@@ -2587,6 +2624,15 @@ def _run_calibration_impl(
                 final_entry["raw_threshold"] = raw_thr.detach().cpu()
                 final_entry["thr_zero_mask"] = thr_zero_mask.detach().cpu()
             completed_module_params[mname] = final_entry
+            progress(
+                "calibrate.modules",
+                module_idx + 1,
+                len(target_module_names),
+                unit="module",
+                throttle=False,
+                module=mname,
+                last_loss=loss_history[-1] if loss_history else None,
+            )
             del w, w_f32, raw_param
             if raw_thr is not None:
                 del raw_thr
@@ -2617,6 +2663,15 @@ def _run_calibration_impl(
             final_entry["raw_threshold"] = raw_thr.detach().cpu()
             final_entry["thr_zero_mask"] = thr_zero_mask.detach().cpu()
         completed_module_params[mname] = final_entry
+        progress(
+            "calibrate.modules",
+            module_idx + 1,
+            len(target_module_names),
+            unit="module",
+            throttle=False,
+            module=mname,
+            last_loss=loss_history[-1] if loss_history else None,
+        )
 
         # Ensure final checkpoint for this module is saved (if not already saved at final step)
         # Already saved at final step above, but ensure completed dict is persisted
@@ -2695,7 +2750,8 @@ def _run_calibration_impl(
 
     # Held-out loss (via held_cache) — threshold aware
     reconstruction_by_module: dict[str, dict[str, float | int]] = {}
-    for mname, state in per_module.items():
+    for eval_index, (mname, state) in enumerate(per_module.items()):
+        progress("calibrate.evaluate", eval_index, len(per_module), unit="module", module=mname)
         codes_fixed = state["codes"]
         orig_scales = state["orig_scales"]
         reference_scales = state["reference_scales"]
@@ -2928,6 +2984,8 @@ def _run_calibration_impl(
             import shutil as _sh
 
             _sh.rmtree(calibrated_snapshot, ignore_errors=True)
+        progress("calibrate.evaluate", len(per_module), len(per_module), unit="module")
+        milestone("calibrate.materialize", destination=str(calibrated_snapshot))
         _report = materialize_calibrated_snapshot(
             src_snapshot=pathlib.Path(teacher_snapshot),  # type: ignore[arg-type]
             dst_snapshot=calibrated_snapshot,

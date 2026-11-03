@@ -18,6 +18,7 @@ from openternary.services.artifacts import (
 )
 from openternary.services.errors import CapabilityError
 from openternary.services.process import run_process
+from openternary.services.reporting import milestone
 from openternary.services.snapshot import tensor_inventory
 
 
@@ -51,8 +52,10 @@ def export_gguf(
         output = staged / "model.gguf"
         python = str(converter_python.resolve()) if converter_python else sys.executable
         command = [python, str(converter), str(source), "--outfile", str(output), "--outtype", output_dtype]
+        milestone("export.converter", status="running", converter=str(converter))
         with (staged / "converter.log").open("w", encoding="utf-8") as log:
             run_process(command, timeout=timeout_seconds, stdout=log)
+        milestone("export.converter", status="finished")
         with output.open("rb") as stream:
             header = stream.read(24)
         if len(header) != 24:

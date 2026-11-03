@@ -20,6 +20,8 @@ import struct
 import tempfile
 from typing import Any
 
+from openternary.services.reporting import progress
+
 try:
     import torch
 except ImportError:
@@ -316,7 +318,8 @@ def convert_snapshot(
         with SnapshotReader(src_root) as f:
             keys = sorted(f.keys())
             # Also need header info for shape/dtype? Use f.get_slice for shape
-            for name in keys:
+            for tensor_index, name in enumerate(keys):
+                progress("convert.tensors", tensor_index, len(keys), unit="tensor", tensor=name)
                 tensor = f.get_tensor(name)  # torch.Tensor CPU
                 # dtype string for classification/header
                 dtype_str = str(tensor.dtype).upper().replace("TORCH.", "")
@@ -613,7 +616,9 @@ def convert_snapshot(
 
         # file hashes for determinism check (optional) — streaming to avoid MemoryError
         file_hashes: dict[str, str] = {}
+        progress("convert.tensors", len(keys), len(keys), unit="tensor")
         for i in range(1, shard_count + 1):
+            progress("convert.hash", i - 1, shard_count, unit="shard", throttle=False)
             p = dst_root / f"model-{i:05d}-of-{shard_count:05d}.safetensors"
             import hashlib as _hl
 
@@ -623,6 +628,7 @@ def convert_snapshot(
                     h_obj.update(chunk)
             h = h_obj.hexdigest()
             file_hashes[p.name] = f"sha256:{h}"
+        progress("convert.hash", shard_count, shard_count, unit="shard")
 
         return ConvertReport(
             dst_snapshot=dst_root,
@@ -765,6 +771,7 @@ def materialize_calibrated_snapshot(
             with safe_open(str(stf), framework="pt", device="cpu") as f:
                 for name in keys:
                     tensor_idx += 1
+                    progress("materialize.tensors", tensor_idx - 1, total_tensors, unit="tensor", tensor=name)
                     try:
                         _materialize_log(
                             f"[materialize] [{tensor_idx}/{total_tensors}] start name={name} shard={stf.name} buffer_bytes={current_bytes} shard_idx={shard_index} rss={_get_rss_mb():.1f} MB"
@@ -1124,7 +1131,9 @@ def materialize_calibrated_snapshot(
         _atomic_rename(tmp_root, dst_root)
 
         file_hashes: dict[str, str] = {}
+        progress("materialize.tensors", total_tensors, total_tensors, unit="tensor")
         for i in range(1, shard_count + 1):
+            progress("materialize.hash", i - 1, shard_count, unit="shard", throttle=False)
             p = dst_root / f"model-{i:05d}-of-{shard_count:05d}.safetensors"
             import hashlib as _hl2
 
@@ -1134,6 +1143,7 @@ def materialize_calibrated_snapshot(
                     h_obj2.update(chunk2)
             h = h_obj2.hexdigest()
             file_hashes[p.name] = f"sha256:{h}"
+        progress("materialize.hash", shard_count, shard_count, unit="shard")
 
         return ConvertReport(
             dst_snapshot=dst_root,
