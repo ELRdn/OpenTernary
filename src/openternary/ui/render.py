@@ -81,6 +81,7 @@ def doctor(result: dict[str, Any]) -> RenderableType:
             t("doctor.probe_hint") if hardware == "not_probed" else str(hardware),
         ),
         Text.assemble((f"{t('doctor.model_validation')}: ", "bold"), badge(result.get("model_validation"))),
+        *_torch_lines(),
     ]
     probe = result.get("runtime_probe")
     if isinstance(probe, dict):
@@ -92,6 +93,28 @@ def doctor(result: dict[str, Any]) -> RenderableType:
         border_style=brand.BORDER,
         expand=False,
     )
+
+
+def _torch_lines() -> list[RenderableType]:
+    """PyTorch build vs. what `openternary setup` recorded for this environment (human view only)."""
+    from openternary.services.torch_setup import installed_torch, read_profile
+
+    installed, profile = installed_torch(), read_profile()
+    label = Text(f"{t('doctor.torch')}: ", style="bold")
+    if profile is None:
+        return [Text.assemble(label, installed or t("none"), (f"  ({t('doctor.torch_no_profile')})", "dim"))]
+    status = (profile.get("verification") or {}).get("status")
+    lines: list[RenderableType] = [
+        Text.assemble(
+            label,
+            installed or t("none"),
+            (f"  · {profile.get('backend')} · {profile.get('provider')}  ", "dim"),
+            badge(status),
+        )
+    ]
+    if installed != profile.get("version"):
+        lines.append(Text.assemble(("▲ ", brand.WARN), t("doctor.torch_drift", recorded=profile.get("version"))))
+    return lines
 
 
 def plan(result: dict[str, Any]) -> RenderableType:
@@ -200,3 +223,105 @@ def _hint(code: int, message: str, exc_type: str | None) -> str | None:
     if code == 5:
         return t("hint.hardware")
     return None
+
+
+# --- setup ----------------------------------------------------------------------------------------
+def _host_panel(host: dict[str, Any]) -> RenderableType:
+    os_label = (
+        f"{host.get('os')}{' (WSL)' if host.get('wsl') else ''} · {host.get('machine')} · Python {host.get('python')}"
+    )
+    rows: list[RenderableType] = [Text(os_label, style="bold")]
+    gpus = host.get("gpus") or []
+    if not gpus:
+        rows.append(Text.assemble(("○ ", brand.MUTED), t("setup.gpus_none")))
+    for gpu in gpus:
+        details = [d for d in (gpu.get("arch"), gpu.get("driver") and f"driver {gpu['driver']}") if d]
+        if gpu.get("cuda_driver"):
+            details.append(f"CUDA ≤ {gpu['cuda_driver']}")
+        rows.append(
+            Text.assemble(
+                ("● ", brand.OK),
+                (f"{gpu.get('vendor', '').upper():7}", "bold"),
+                f"{gpu.get('name')}  ",
+                (" · ".join(details), "dim"),
+            )
+        )
+    for note in host.get("notes") or []:
+        rows.append(Text.assemble(("▲ ", brand.WARN), t(f"note.{note}")))
+    return Panel(
+        Group(*rows),
+        title=Text(t("setup.hardware"), style=f"bold {brand.ACCENT}"),
+        title_align="left",
+        border_style=brand.BORDER,
+        expand=False,
+    )
+
+
+def setup_view(console: Console, result: dict[str, Any], plan: Any, limit: int) -> None:
+    if "host" in result:
+        console.print(_host_panel(result["host"]))
+        backend = result.get("backend")
+        verified = set(result.get("verified_here") or [])
+        installed = result.get("installed_torch")
+        candidates = result.get("candidates") or []
+        title = Text.assemble(
+            (t("setup.candidates"), f"bold {brand.ACCENT}"),
+            (f"  ·  {t('setup.backend')}: ", "dim"),
+            (str(backend), "bold"),
+        )
+        console.print(title)
+        if not candidates:
+            console.print(Text(t("setup.none_listed"), style="dim"))
+        else:
+            table = _table("", "torch", "torchvision", "variant", t("setup.source"))
+            for index, row in enumerate(candidates[:limit]):
+                marks = Text()
+                marks.append("★" if index == 0 else " ", style=brand.WARN)
+                marks.append("✔" if row["version"] in verified else " ", style=brand.OK)
+                marks.append("●" if row["version"] == installed else " ", style=brand.INFO)
+                vision = (
+                    Text(row["torchvision"]) if row.get("torchvision") else Text(t("setup.no_torchvision"), style="dim")
+                )
+                table.add_row(marks, row["version"], vision, row["variant"], row["provider"])
+            console.print(table)
+            if len(candidates) > limit:
+                console.print(Text(t("setup.more", count=len(candidates) - limit), style="dim"))
+            console.print(Text(t("setup.legend"), style="dim"))
+        for warning in result.get("warnings") or []:
+            console.print(Text.assemble(("▲ ", brand.WARN), t(f"warn.{warning}")))
+        errors = result.get("index_errors") or {}
+        if errors:
+            console.print(Text.assemble((f"{t('setup.index_errors')}: ", "dim"), (", ".join(errors), "dim")))
+    if plan is not None:
+        rows = _table(t("col.key"), t("col.value"))
+        rows.add_row("torch", Text(plan.candidate.version, style="bold"))
+        rows.add_row("torchvision", _scalar(plan.torchvision or "auto"))
+        rows.add_row(t("setup.source"), plan.candidate.index_url)
+        rows.add_row(t("setup.target"), plan.python)
+        parts: list[RenderableType] = [rows]
+        if plan.amd_device:
+            parts.append(Text(t("setup.amd_device", device=plan.amd_device), style="dim"))
+        parts += [Text(t("setup.command"), style="bold"), Text(" ".join(plan.command), style="dim")]
+        console.print(
+            Panel(
+                Group(*parts),
+                title=Text(t("setup.plan"), style=f"bold {brand.ACCENT}"),
+                title_align="left",
+                border_style=brand.BORDER,
+                expand=False,
+            )
+        )
+    verification = result.get("verification")
+    if isinstance(verification, dict):
+        checks = verification.get("checks") or []
+        line = Text.assemble(
+            (f"{t('setup.verification')}: ", "bold"),
+            badge(verification.get("status")),
+            ("  " + str(verification.get("device_name") or verification.get("device") or ""), "dim"),
+        )
+        console.print(line)
+        for check in checks:
+            console.print(Text.assemble("  ", badge(check.get("status")), f"  {check.get('dtype')}"))
+        if verification.get("reason"):
+            console.print(Text(str(verification["reason"]), style="dim"))
+        console.print(Text(f"{t('setup.profile')}: {result.get('profile')}", style="dim"))

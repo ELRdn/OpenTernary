@@ -44,6 +44,7 @@ for _module in (
     "optimize",
     "cache_info",
     "cache",
+    "setup",
 ):
     import_module(f"openternary.cli.{_module}")
 
@@ -60,6 +61,7 @@ HELP_ORDER = (
     "compare",
     "optimize",
     "doctor",
+    "setup",
     "plugins",
     "cache-info",
 )

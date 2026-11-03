@@ -1,6 +1,6 @@
 # OpenTernary TUI / UX 設計
 
-2026-11-03 / status: draft (P1〜P3実装済み、P3の見た目はオーナー確認待ち。次はP4)
+2026-11-03 / status: draft (P1〜P3・setup実装済み。setupはオーナーPCでの実機確認待ち。次はP4)
 
 ## 目的
 
@@ -27,6 +27,10 @@
 | D15 | UIパレット | ラボのアイコン（金・銅）には合わせない。**Yoru（夜）に決定** |
 | D16 | シンボル | **オーナー作成の公式SVG v1.0**（`docs/brand/openternary-v1.0.svg`）を採用。ストック画像を参考に作った組紐（A）・渦（B）の再構成は破棄 |
 | D17 | アニメーション | **時計回り**（頭が先に進む向き。2026-11-03 オーナー決定）。`OPENTERNARY_SPIN=ccw`・`--ccw`・`mark(..., clockwise=False)`で反転。資産は反時計回りで格納し、時計回りは逆順再生。48コマ・12fps＝1周4秒。非TTYと`OPENTERNARY_REDUCED_MOTION`/`NO_MOTION`では静止 |
+| D18 | 環境構築 | `openternary setup`を追加（P4より先）。GPUを自動検出し、CUDA / ROCm / MPS / CPUのPyTorchを**`openternary`を実行中の環境**に入れる（2026-11-03 オーナー決定）。D7（MLに触れない）はこの明示コマンドに限って撤回 |
+| D19 | 対応範囲 | Windows（CPU/NVIDIA/AMD）、Linux（CPU/CUDA/ROCm）、WSL、macOS（MPS/CPU）すべて |
+| D20 | バージョン選択 | オーナーによる事前検証は行わない。配布元から**その場で**一覧を取得し、互換のあるものを全て提示。印は「おすすめ」「このPCで自動確認済み（インストール後のデバイス検査の記録）」 |
+| D21 | 構成の記録 | `<環境>/openternary-torch.json`。`doctor`がずれを警告、`setup --restore`で復元、P4の`update`は更新後にこれを再適用する |
 
 ### 未決事項
 

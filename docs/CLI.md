@@ -44,6 +44,25 @@ openternary plugins --json
 
 通常の`doctor`はpackage metadataのみを読む。`doctor --probe-runtime --device cpu|cuda`を明示すると、固定小型tensorでFP32/BF16演算・実device・有限値を確認する。モデルはロードしない。`backends`の`installation`と`model_reload`/`native_kernel`は別の状態である。
 
+## PyTorchの環境構築（`setup`）
+
+```text
+openternary setup --list          # 検出したGPUと、このPCで入るPyTorchの一覧
+openternary setup --dry-run       # おすすめの計画だけ表示
+openternary setup                 # 確認のうえインストールし、デバイスで動作確認
+openternary setup --backend rocm --torch 2.13.0
+openternary setup --restore       # 前回setupで入れた構成をそのまま入れ直す
+```
+
+- 対象は**`openternary`を実行している環境**（`sys.executable`）。`uv pip install --python <その環境>`で入れる。uvが必要。
+- GPU検出: NVIDIAは`nvidia-smi`（ドライバが対応するCUDAの上限も読む）、WindowsのAMDは`Win32_VideoController`のPCIデバイスIDからgfxを推定、Linux/WSLのAMDは`rocminfo`か`/sys`、macOSのApple siliconはMPS。判別できないAMDは`OPENTERNARY_GPU_ARCH=gfxNNNN`で指定する。
+- 配布元はその場で一覧を取得する（固定のバージョン表は持たない）: PyTorch公式（`download.pytorch.org/whl`、CUDA/ROCm/CPU）、AMD（`stable.repo.amd.com/rocm/whl-next`、Windows/LinuxのROCm）、PyPI。URLは`OPENTERNARY_INDEX_PYTORCH`/`_AMD`/`_PYPI`で差し替えられる。
+- このPCのPythonとOSで入るwheelだけを出す。Pythonが合わない場合は、ビルドのあるPythonを示す（例: Windows ROCmは3.12/3.13のみ）。
+- 同じ配布元に対応するtorchvision（`0.(minor+15)`、同じlocal版）があるものを優先して推奨する。torchvisionが未公開の版を明示的に選ぶとtorchだけを入れ、警告を出す。
+- NVIDIAはドライバのCUDA上限以下のビルドだけを推奨する。AMDのカーネルは既定で`device-all`（`--amd-device gfxNNNN`で小さくできる）。
+- インストール後、新しいプロセスで`runtime_probe`（FP32/BF16の行列積）を実デバイスで実行し、結果と構成を`<環境>/openternary-torch.json`に記録する。失敗は終了コード5。`doctor`はこの記録と実際のtorchを並べて表示し、`uv sync`などで入れ替わっていれば`setup --restore`を案内する。
+- 対話端末以外と`--json`では、`--yes`がないとインストールしない（終了コード2）。
+
 ## 計画と設定
 
 ```text

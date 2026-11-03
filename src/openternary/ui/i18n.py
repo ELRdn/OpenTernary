@@ -138,6 +138,91 @@ M: dict[str, dict[str, str]] = {
         "en": "Check the device with: openternary doctor --probe-runtime --device cuda",
         "ja": "デバイスを確認: openternary doctor --probe-runtime --device cuda",
     },
+    "help.setup": {
+        "en": "Detect the GPU and install a matching PyTorch build (CUDA / ROCm / MPS / CPU) into this environment.",
+        "ja": "GPUを検出し、合うPyTorch（CUDA / ROCm / MPS / CPU）をこの環境に入れる。",
+    },
+    "setup.hardware": {"en": "Detected hardware", "ja": "検出したハードウェア"},
+    "setup.gpus_none": {"en": "no supported GPU found", "ja": "対応GPUは見つかりませんでした"},
+    "setup.backend": {"en": "Backend", "ja": "方式"},
+    "setup.candidates": {"en": "Available PyTorch builds for this PC", "ja": "このPCで使えるPyTorch"},
+    "setup.legend": {
+        "en": "★ recommended   ✔ verified on this PC   ● installed now",
+        "ja": "★ おすすめ   ✔ このPCで動作確認済み   ● 現在インストール中",
+    },
+    "setup.more": {
+        "en": "… {count} more (openternary setup --list --json)",
+        "ja": "… ほか{count}件（openternary setup --list --json）",
+    },
+    "setup.none_listed": {
+        "en": "No compatible build found for this backend.",
+        "ja": "この方式で使えるビルドがありません。",
+    },
+    "setup.plan": {"en": "Install plan", "ja": "インストール計画"},
+    "setup.target": {"en": "Into", "ja": "入れる先"},
+    "setup.source": {"en": "Source", "ja": "配布元"},
+    "setup.command": {"en": "Command", "ja": "実行するコマンド"},
+    "setup.confirm": {
+        "en": "Install now? This downloads several GB.",
+        "ja": "インストールしますか？ 数GBダウンロードします。",
+    },
+    "setup.needs_yes": {
+        "en": "Installing needs confirmation; rerun with --yes (or use --dry-run to only see the plan).",
+        "ja": "インストールには確認が必要です。--yes を付けて再実行してください（計画だけなら --dry-run）。",
+    },
+    "setup.install_failed": {"en": "PyTorch installation failed", "ja": "PyTorchのインストールに失敗しました"},
+    "setup.verify_failed": {
+        "en": "Installed, but the device check failed",
+        "ja": "インストールはしましたが、デバイスでの動作確認に失敗しました",
+    },
+    "setup.verification": {"en": "Device check", "ja": "デバイスでの動作確認"},
+    "setup.profile": {"en": "Recorded in", "ja": "記録先"},
+    "setup.index_unreachable": {
+        "en": "Could not read any package index",
+        "ja": "配布元の一覧を取得できませんでした",
+    },
+    "setup.python_mismatch": {
+        "en": "No build for Python {python}; builds exist for {needed}. Reinstall with e.g. uv tool install --editable . --python {needed} --reinstall",
+        "ja": "Python {python} 用のビルドがありません（{needed} 用はあります）。例: uv tool install --editable . --python {needed} --reinstall",
+    },
+    "setup.no_build": {
+        "en": "No {backend} build is published for this platform",
+        "ja": "この環境向けの {backend} ビルドは配布されていません",
+    },
+    "setup.no_profile": {
+        "en": "Nothing to restore: openternary setup has not recorded a build in this environment",
+        "ja": "戻す構成がありません。この環境では openternary setup の記録がありません",
+    },
+    "setup.index_errors": {"en": "Unreachable sources", "ja": "取得できなかった配布元"},
+    "warn.cuda_driver_too_old": {
+        "en": "The NVIDIA driver is older than every listed CUDA build; update the driver.",
+        "ja": "NVIDIAドライバが、どのCUDAビルドよりも古いです。ドライバを更新してください。",
+    },
+    "warn.cuda_driver_unknown": {
+        "en": "The NVIDIA driver's CUDA version is unknown; the newest build was picked.",
+        "ja": "NVIDIAドライバの対応CUDAが分からないため、最新のビルドを選びました。",
+    },
+    "warn.rocm_on_wsl": {
+        "en": "ROCm under WSL needs AMD's WSL driver and is not verified here.",
+        "ja": "WSL上のROCmにはAMDのWSL用ドライバが必要で、ここでは未検証です。",
+    },
+    "warn.torchvision_missing": {
+        "en": "No matching torchvision is published for this torch yet; only torch is installed (Gemma image processing may fail).",
+        "ja": "このtorchに合うtorchvisionはまだ公開されていないため、torchだけを入れます（Gemmaの画像処理が動かない可能性があります）。",
+    },
+    "setup.no_torchvision": {"en": "no torchvision yet", "ja": "torchvision未公開"},
+    "note.wsl_gpu_not_visible": {
+        "en": "WSL: no GPU is visible inside WSL.",
+        "ja": "WSL: WSLの中からGPUが見えていません。",
+    },
+    "note.amd_arch_unknown": {
+        "en": "AMD GPU model not recognised; set OPENTERNARY_GPU_ARCH=gfxNNNN if needed.",
+        "ja": "AMD GPUの型番を判別できません。必要なら OPENTERNARY_GPU_ARCH=gfxNNNN を指定してください。",
+    },
+    "setup.amd_device": {
+        "en": "AMD kernels: {device} (use --amd-device gfxNNNN for a smaller download)",
+        "ja": "AMDカーネル: {device}（--amd-device gfxNNNN でダウンロードを小さくできます）",
+    },
     # --- doctor / backends / plan ------------------------------------------------------------
     "doctor.title": {"en": "Environment", "ja": "環境"},
     "doctor.dependencies": {"en": "Dependencies", "ja": "依存パッケージ"},
@@ -149,6 +234,15 @@ M: dict[str, dict[str, str]] = {
         "ja": "未確認 — openternary doctor --probe-runtime",
     },
     "doctor.runtime_probe": {"en": "Runtime probe", "ja": "実行時チェック"},
+    "doctor.torch": {"en": "PyTorch", "ja": "PyTorch"},
+    "doctor.torch_no_profile": {
+        "en": "not set up by openternary setup",
+        "ja": "openternary setup では未設定",
+    },
+    "doctor.torch_drift": {
+        "en": "differs from the build openternary setup installed ({recorded}); restore it with: openternary setup --restore",
+        "ja": "openternary setup で入れた構成（{recorded}）と違います。戻すには: openternary setup --restore",
+    },
     "col.package": {"en": "Package", "ja": "パッケージ"},
     "col.version": {"en": "Version", "ja": "バージョン"},
     "col.backend": {"en": "Backend", "ja": "バックエンド"},

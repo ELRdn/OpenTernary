@@ -9,13 +9,15 @@ from openternary.services.errors import HardwareError
 
 
 def probe_runtime(device: str = "cpu") -> dict[str, Any]:
-    if device not in {"cpu", "cuda"}:
-        raise ValueError("runtime probe device must be cpu or cuda")
+    if device not in {"cpu", "cuda", "mps"}:
+        raise ValueError("runtime probe device must be cpu, cuda or mps")
     import torch
 
     if device == "cuda" and not torch.cuda.is_available():
         raise HardwareError("GPU runtime explicitly requested but unavailable")
-    resolved = "cuda:0" if device == "cuda" else "cpu"
+    if device == "mps" and not torch.backends.mps.is_available():
+        raise HardwareError("MPS runtime explicitly requested but unavailable")
+    resolved = {"cuda": "cuda:0", "mps": "mps:0"}.get(device, "cpu")
     results = []
     for dtype in (torch.float32, torch.bfloat16):
         started = time.perf_counter()
@@ -25,6 +27,8 @@ def probe_runtime(device: str = "cpu") -> dict[str, Any]:
                 result = values.to(dtype) @ values.to(dtype).T
                 if resolved.startswith("cuda"):
                     torch.cuda.synchronize()
+                elif resolved.startswith("mps"):
+                    torch.mps.synchronize()
                 finite = bool(torch.isfinite(result).all().item())
                 if not finite or str(result.device) != resolved or result.dtype != dtype:
                     raise RuntimeError("runtime probe device/dtype/finite check failed")
@@ -43,7 +47,7 @@ def probe_runtime(device: str = "cpu") -> dict[str, Any]:
         "torch": torch.__version__,
         "hip": torch.version.hip,
         "device": resolved,
-        "device_name": torch.cuda.get_device_name(0) if device == "cuda" else "cpu",
+        "device_name": torch.cuda.get_device_name(0) if device == "cuda" else device,
         "checks": results,
         "status": "passed" if all(r["status"] == "passed" for r in results) else "failed",
         "native_low_bit_kernel": "not_probed",

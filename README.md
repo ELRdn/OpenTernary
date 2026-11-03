@@ -56,6 +56,8 @@ uv tool update-shell
 
 `uv tool update-shell` は初回だけ必要で、実行後にターミナルを開き直す。`--python 3.12` を付けないと、uvはPCにある最新のPythonを選ぶことがある（CIで検証しているのは3.11と3.12）。このコマンドで入るのは本体だけなので、量子化・校正には `uv run openternary ...`（`uv sync --extra ml --extra calibration` 済みの `.venv`）を使うか、`uv tool install --editable ".[ml,calibration]" --python 3.12 --reinstall` で機械学習の依存ごと入れる。`--editable` なので `git pull` した変更はそのまま反映される。依存パッケージが増えた更新のあとは `uv tool install --editable . --reinstall` を実行する。Windowsはコマンド名の大文字小文字を区別しないため `OpenTernary` でも動く。
 
+GPU用のPyTorchは `openternary setup` で入れられる。GPU（NVIDIA / AMD / Apple）を検出して合うビルドを提案し、確認のうえ `openternary` を動かしている環境に入れ、実際のデバイスで動作を確認する（`openternary setup --list` で候補の一覧、`--dry-run` で計画だけ表示）。詳細は [CLI guide](docs/CLI.md) の「PyTorchの環境構築」。
+
 `--json` を付けると、結果のJSON 1行だけがstdoutに出て、人間向けの表示はstderrに回る。ターミナルでは両方が見えるので2回出たように見えるが、`> result.json` のようにリダイレクトすると1行だけが保存される。
 
 - Python 3.12 を推奨（`uv python pin 3.12` で固定、`requires-python >=3.11`）
