@@ -8,9 +8,10 @@ import typer
 from openternary.cli.common import app
 from openternary.cli.product import display
 from openternary.cli.protocol import Command
+from openternary.ui.i18n import t
 
 cache = typer.Typer(help="Manage explicitly selected OpenTernary artifact roots", no_args_is_help=True)
-app.add_typer(cache, name="cache")
+app.add_typer(cache, name="cache", help=t("help.cache"), rich_help_panel=t("panel.environment"))
 
 
 @cache.command("list", cls=Command)

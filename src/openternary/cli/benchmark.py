@@ -5,11 +5,12 @@ from typing import Annotated
 
 import typer
 
-from openternary.cli.common import _resolve_cli_overrides, _write_failed_metrics, app, console
+from openternary.cli.common import _resolve_cli_overrides, _write_failed_metrics, app, console, explain
 from openternary.cli.protocol import Command
+from openternary.ui.i18n import t
 
 
-@app.command("benchmark", cls=Command)
+@app.command("benchmark", cls=Command, help=t("help.benchmark"), rich_help_panel=t("panel.evaluate"))
 def benchmark(
     model: Annotated[str | None, typer.Argument(help="Model id or path")] = None,
     config: Annotated[pathlib.Path | None, typer.Option("--config", "-c", help="Path to YAML config")] = None,
@@ -40,10 +41,10 @@ def benchmark(
     try:
         cfg = load_config(config_path=config, cli_overrides=overrides)
     except FileNotFoundError as e:
-        console.print(f"[red]Config file not found:[/red] {e}")
+        explain("Config file not found")
         raise typer.Exit(2) from e
     except ValueError as e:
-        console.print(f"[red]Configuration error:[/red] {e}")
+        explain("Configuration error")
         raise typer.Exit(2) from e
 
     if dry_run:
@@ -67,26 +68,25 @@ def benchmark(
         result = run_benchmark(cfg, snapshot_path=snapshot_path, suite=cfg.benchmark.suite)
     except FileNotFoundError as e:
         _write_failed_metrics(run_dir, run_id, "FileNotFoundError", str(e))
-        console.print(f"[red]Snapshot not found:[/red] {e}")
+        explain("Snapshot not found")
         raise typer.Exit(2) from e
     except ImportError as e:
         _write_failed_metrics(run_dir, run_id, "ImportError", str(e))
-        console.print(f"[red]Missing dependency:[/red] {e}")
-        console.print("[dim]Install with: uv sync --extra ml[/dim]")
+        explain("Missing dependency")
         raise typer.Exit(2) from e
     except ValueError as e:
         _write_failed_metrics(run_dir, run_id, "ValueError", str(e))
-        console.print(f"[red]Benchmark configuration error:[/red] {e}")
+        explain("Benchmark configuration error")
         raise typer.Exit(2) from e
     except RuntimeError as e:
         # BF16 exact violation 等の loud error
         _write_failed_metrics(run_dir, run_id, "RuntimeError", str(e))
-        console.print(f"[red]Benchmark failed:[/red] {e}")
+        explain("Benchmark failed")
         raise typer.Exit(2) from e
     except Exception as e:  # noqa: BLE001
         logger.exception("benchmark failed")
         _write_failed_metrics(run_dir, run_id, type(e).__name__, str(e))
-        console.print(f"[red]Benchmark failed:[/red] {e}")
+        explain("Benchmark failed")
         raise typer.Exit(1) from e
 
     # benchmark.json / metrics.json / model.json

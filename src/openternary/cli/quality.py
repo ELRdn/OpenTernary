@@ -5,11 +5,12 @@ from typing import Annotated
 
 import typer
 
-from openternary.cli.common import _resolve_cli_overrides, _write_failed_metrics, app, console
+from openternary.cli.common import _resolve_cli_overrides, _write_failed_metrics, app, console, explain
 from openternary.cli.protocol import Command
+from openternary.ui.i18n import t
 
 
-@app.command("quality", cls=Command)
+@app.command("quality", cls=Command, help=t("help.quality"), rich_help_panel=t("panel.evaluate"))
 def quality(
     model: Annotated[str | None, typer.Argument(help="Model id or path")] = None,
     data: Annotated[pathlib.Path | None, typer.Option("--data", help="Frozen quality dataset JSON")] = None,
@@ -37,23 +38,23 @@ def quality(
     try:
         cfg = load_config(config_path=config, cli_overrides=overrides)
     except FileNotFoundError as exc:
-        console.print(f"[red]Config file not found:[/red] {exc}")
+        explain("Config file not found")
         raise typer.Exit(2) from exc
     except ValueError as exc:
-        console.print(f"[red]Configuration error:[/red] {exc}")
+        explain("Configuration error")
         raise typer.Exit(2) from exc
 
     if data is None:
-        console.print("[red]quality requires --data with a frozen dataset JSON[/red]")
+        explain("quality requires --data with a frozen dataset JSON")
         raise typer.Exit(2)
     if not data.is_file():
-        console.print(f"[red]Quality dataset not found:[/red] {data}")
+        explain(f"Quality dataset not found: {data}")
         raise typer.Exit(2)
     if split not in {"validation", "test"}:
-        console.print("[red]--split must be validation or test[/red]")
+        explain("--split must be validation or test")
         raise typer.Exit(2)
     if stride >= max_length:
-        console.print("[red]--stride must be smaller than --max-length[/red]")
+        explain("--stride must be smaller than --max-length")
         raise typer.Exit(2)
 
     if dry_run:
@@ -62,7 +63,7 @@ def quality(
 
             dataset_audit = validate_quality_dataset(data)
         except (FileNotFoundError, OSError, ValueError) as exc:
-            console.print(f"[red]Quality dataset validation failed:[/red] {exc}")
+            explain("Quality dataset validation failed")
             raise typer.Exit(2) from exc
         console.print("[bold cyan]quality: dry-run — resolved config[/bold cyan]")
         console.print(dump_config_yaml(cfg))
@@ -87,12 +88,12 @@ def quality(
         )
     except (FileNotFoundError, ImportError, ValueError, RuntimeError) as exc:
         _write_failed_metrics(run_dir, run_id, type(exc).__name__, str(exc))
-        console.print(f"[red]Quality evaluation failed:[/red] {exc}")
+        explain("Quality evaluation failed")
         raise typer.Exit(2) from exc
     except Exception as exc:  # noqa: BLE001
         logger.exception("quality evaluation failed")
         _write_failed_metrics(run_dir, run_id, type(exc).__name__, str(exc))
-        console.print(f"[red]Quality evaluation failed:[/red] {exc}")
+        explain("Quality evaluation failed")
         raise typer.Exit(1) from exc
 
     write_json(run_dir / "quality.json", result)

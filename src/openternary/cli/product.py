@@ -11,33 +11,38 @@ import typer
 from openternary.cli.common import app, console
 from openternary.cli.protocol import Command
 from openternary.services.reporting import publish
+from openternary.ui.i18n import t
 
 backends = typer.Typer(help="Backend installation and capability metadata", no_args_is_help=True)
 artifacts = typer.Typer(help="Artifact integrity and metadata", no_args_is_help=True)
-app.add_typer(backends, name="backends")
-app.add_typer(artifacts, name="artifacts")
+app.add_typer(backends, name="backends", help=t("help.backends"), rich_help_panel=t("panel.environment"))
+app.add_typer(artifacts, name="artifacts", help=t("help.artifacts"), rich_help_panel=t("panel.environment"))
 
 
-def display(result: dict[str, Any]) -> None:
+def display(result: dict[str, Any], kind: str = "generic") -> None:
+    """Publish the machine result (for --json) and draw the human view."""
+    json.dumps(result, ensure_ascii=False, allow_nan=False)  # same validity rules as the envelope
     publish(**result)
-    console.print_json(json.dumps(result, ensure_ascii=False, allow_nan=False))
+    from openternary.ui.render import render
+
+    render(console, kind, result)
 
 
 @backends.command("list", cls=Command)
 def backend_list() -> None:
     from openternary.backends import list_backends
 
-    display({"backends": list_backends()})
+    display({"backends": list_backends()}, "backends")
 
 
 @backends.command("info", cls=Command)
 def backend_info(name: str) -> None:
     from openternary.backends import get_spec
 
-    display(get_spec(name).describe())
+    display(get_spec(name).describe(), "backend")
 
 
-@app.command("plan", cls=Command)
+@app.command("plan", cls=Command, help=t("help.plan"), rich_help_panel=t("panel.workflow"))
 def plan(
     model: Annotated[str | None, typer.Argument()] = None,
     config: Annotated[Path | None, typer.Option("--config", "-c")] = None,
@@ -56,10 +61,10 @@ def plan(
         "quantization.weight_dtype": weight_dtype,
         "model.component": component,
     }
-    display(service_plan(config, overrides))
+    display(service_plan(config, overrides), "plan")
 
 
-@app.command("doctor", cls=Command)
+@app.command("doctor", cls=Command, help=t("help.doctor"), rich_help_panel=t("panel.environment"))
 def doctor(
     probe_runtime: Annotated[bool, typer.Option("--probe-runtime")] = False,
     device: Annotated[str, typer.Option("--device")] = "cpu",
@@ -73,11 +78,11 @@ def doctor(
         from openternary.services.runtime_probe import probe_runtime as probe
 
         result["runtime_probe"] = probe(device)
-        display(result)
+        display(result, "doctor")
         if result["runtime_probe"]["status"] != "passed":
             raise HardwareError("runtime probe failed; see individual checks")
     else:
-        display(result)
+        display(result, "doctor")
 
 
 @artifacts.command("validate", cls=Command)
@@ -96,9 +101,9 @@ def artifact_validate(path: Path, level: Annotated[str, typer.Option("--level")]
     )
 
 
-@app.command("plugins", cls=Command)
+@app.command("plugins", cls=Command, help=t("help.plugins"), rich_help_panel=t("panel.environment"))
 def plugins() -> None:
     """List installed version-one extensions without executing their code."""
     from openternary.services.plugins import discover_plugins
 
-    display({"plugins": discover_plugins()})
+    display({"plugins": discover_plugins()}, "plugins")

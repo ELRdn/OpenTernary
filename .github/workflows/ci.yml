@@ -48,6 +48,7 @@ jobs:
           tests/test_run_metadata.py tests/test_cli_help.py
           tests/test_extensions_product.py tests/test_artifact_product.py
           tests/test_cli_json_contract.py tests/test_ui_brand.py
+          tests/test_progress_events.py tests/test_cli_presentation.py
 
       - name: Build wheel and sdist
         run: uv build

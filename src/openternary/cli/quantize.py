@@ -5,11 +5,12 @@ from typing import Annotated
 
 import typer
 
-from openternary.cli.common import _resolve_cli_overrides, _write_failed_metrics, app, console
+from openternary.cli.common import _resolve_cli_overrides, _write_failed_metrics, app, console, explain
 from openternary.cli.protocol import Command
+from openternary.ui.i18n import t
 
 
-@app.command("quantize", cls=Command)
+@app.command("quantize", cls=Command, help=t("help.quantize"), rich_help_panel=t("panel.workflow"))
 def quantize(
     model: Annotated[str | None, typer.Argument(help="Model id or path")] = None,
     config: Annotated[pathlib.Path | None, typer.Option("--config", "-c", help="Path to YAML config")] = None,
@@ -56,10 +57,10 @@ def quantize(
     try:
         cfg = load_config(config_path=config, cli_overrides=overrides)
     except FileNotFoundError as e:
-        console.print(f"[red]Config file not found:[/red] {e}")
+        explain("Config file not found")
         raise typer.Exit(2) from e
     except ValueError as e:
-        console.print(f"[red]Configuration error:[/red] {e}")
+        explain("Configuration error")
         raise typer.Exit(2) from e
 
     if dtype is not None:
@@ -100,21 +101,20 @@ def quantize(
         report = convert_artifact(snapshot_path, dst_snapshot, cfg)
     except FileNotFoundError as e:
         _write_failed_metrics(run_dir, run_id, "FileNotFoundError", str(e))
-        console.print(f"[red]Snapshot not found:[/red] {e}")
+        explain("Snapshot not found")
         raise typer.Exit(2) from e
     except ImportError as e:
         _write_failed_metrics(run_dir, run_id, "ImportError", str(e))
-        console.print(f"[red]Missing dependency:[/red] {e}")
-        console.print("[dim]Install with: uv sync --extra ml[/dim]")
+        explain("Missing dependency")
         raise typer.Exit(2) from e
     except ValueError as e:
         _write_failed_metrics(run_dir, run_id, "ValueError", str(e))
-        console.print(f"[red]Quantize error:[/red] {e}")
+        explain("Quantize error")
         raise typer.Exit(2) from e
     except Exception as e:  # noqa: BLE001
         logger.exception("quantize failed")
         _write_failed_metrics(run_dir, run_id, type(e).__name__, str(e))
-        console.print(f"[red]Quantize failed:[/red] {e}")
+        explain("Quantize failed")
         raise typer.Exit(1) from e
 
     # write quantization report already in dst_snapshot/quantization.json — also copy to run root for convenience

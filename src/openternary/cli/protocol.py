@@ -79,6 +79,18 @@ def record_failure(operation: Operation, code: int, error: str | None) -> None:
         write_json(metrics.parent / "last_failure.json", failed)
 
 
+def print_error(code: int, error: str, context: str | None, failure_type: str | None) -> None:
+    """Print the failure once, on stderr, as a panel (plain text if rendering is impossible)."""
+    try:
+        from rich.console import Console
+
+        from openternary.ui.render import error_panel
+
+        Console(stderr=True).print(error_panel(code, error, context, failure_type))
+    except Exception:
+        typer.echo(f"{context}: {error}" if context and context != error else error, err=True)
+
+
 class Command(TyperCommand):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -108,6 +120,7 @@ class Command(TyperCommand):
         operation = Operation(self.name or "unknown")
         token = current.set(operation)
         code, error = 0, None
+        failure_type: str | None = None
         try:
             with contextlib.ExitStack() as stack:
                 if events is not None:
@@ -169,11 +182,15 @@ class Command(TyperCommand):
                 except typer.Exit as exc:
                     code = error_code(exc.__cause__) if exc.exit_code and exc.__cause__ else exc.exit_code
                     if code:
+                        failure_type = type(exc.__cause__).__name__ if exc.__cause__ else None
                         error = (
-                            str(exc.__cause__) if exc.__cause__ else f"{self.name} rejected the request (see stderr)"
+                            str(exc.__cause__)
+                            if exc.__cause__
+                            else operation.error_context or f"{self.name} rejected the request (see stderr)"
                         )
                 except (Exception, KeyboardInterrupt) as exc:
                     code, error = error_code(exc), str(exc) or type(exc).__name__
+                    failure_type = type(exc).__name__
                 if operation.result.get("run_dir"):
                     metrics = Path(operation.result["run_dir"]) / "metrics.json"
                     if metrics.is_file():
@@ -182,6 +199,7 @@ class Command(TyperCommand):
                 operation.event("completed" if code == 0 else "interrupted" if code == 130 else "failed")
         except (Exception, KeyboardInterrupt) as exc:
             code, error = error_code(exc), str(exc) or type(exc).__name__
+            failure_type = type(exc).__name__
             try:
                 record_failure(operation, code, error)
             except Exception as recording_error:
@@ -191,7 +209,7 @@ class Command(TyperCommand):
         if json_output:
             typer.echo(json.dumps(envelope(operation, code, error), ensure_ascii=False, allow_nan=False))
         elif error:
-            typer.echo(error, err=True)
+            print_error(code, error, operation.error_context, failure_type)
         elif quiet:
             typer.echo(json.dumps(envelope(operation, code, None), ensure_ascii=False, allow_nan=False))
         if code:

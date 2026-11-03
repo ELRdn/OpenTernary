@@ -7,15 +7,26 @@ import pathlib
 import typer
 from rich.console import Console
 
+from openternary.ui.i18n import t
+
 app = typer.Typer(
     name="openternary",
-    help="OpenTernary — quantization CLI (model validation tracked separately)",
+    help=t("app.help"),
     rich_markup_mode="rich",
     no_args_is_help=True,
 )
 
 console = Console()
 err_console = Console(stderr=True)
+
+
+def explain(message: str) -> None:
+    """Say what failed; the CLI protocol prints it once with the error (never printed here)."""
+    from openternary.services.reporting import current
+
+    operation = current.get()
+    if operation is not None:
+        operation.error_context = message
 
 
 def _resolve_cli_overrides(

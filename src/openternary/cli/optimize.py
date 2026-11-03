@@ -17,6 +17,7 @@ from openternary.config.schema import QuantizationConfig
 from openternary.services.errors import AcceptanceError, BudgetError
 from openternary.services.optimize import QualityProfile, SearchBudget, run_search
 from openternary.services.planning import build_plan
+from openternary.ui.i18n import t
 
 
 def parse_bytes(text: str) -> int:
@@ -29,7 +30,7 @@ def parse_bytes(text: str) -> int:
     return result
 
 
-@app.command("optimize", cls=Command)
+@app.command("optimize", cls=Command, help=t("help.optimize"), rich_help_panel=t("panel.evaluate"))
 def optimize(
     model: str,
     search_space: Annotated[Path, typer.Option("--search-space", help="JSON list of quantization configurations")],

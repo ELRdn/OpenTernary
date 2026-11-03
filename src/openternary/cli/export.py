@@ -12,9 +12,10 @@ from openternary.cli.product import display
 from openternary.cli.protocol import Command
 from openternary.services.artifacts import export_artifact
 from openternary.services.errors import CapabilityError
+from openternary.ui.i18n import t
 
 
-@app.command("export", cls=Command)
+@app.command("export", cls=Command, help=t("help.export"), rich_help_panel=t("panel.workflow"))
 def export(
     run: Annotated[Path, typer.Argument(help="Run or artifact directory")],
     format: Annotated[str, typer.Option("--format")] = "safetensors",

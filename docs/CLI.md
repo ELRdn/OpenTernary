@@ -163,6 +163,14 @@ openternary optimize "D:/models/example" --search-space space.json --quality-pro
 
 全候補不合格は`no_feasible_candidate`、予算停止は`budget_exhausted`。どちらもbestを公開しない。容量は100ms間隔で監視するため、その間の一時超過余地がある。CPU以外のworkerはwall timeを保守的なGPU時間として算入する。deviceのピーク値や品質の実測検証は次段階。
 
+## 人間向けの表示・言語
+
+`--json`を付けない場合、`doctor`・`backends`・`plan`・`plugins`などは表で表示する（以前は整形したJSONをそのまま表示していた。機械処理には`--json`を使う）。状態は記号＋語で示し、色は記号だけに付ける（✔ 受入・合格、● 導入済み/完了、◐ 未検証、▲ 実験的・注意、○ 未実行・未導入、– 非対応、✖ 失敗）。`completed`（処理完了）は品質合格ではないため成功色にしない。
+
+エラーは標準エラーに1回だけ、パネルで表示する（何が失敗したか・詳細・必要ならヒント・終了コード）。`--json`の`error`は従来どおり例外の文言で、例外を伴わない入力エラーでは同じ説明文が入る（以前は`... rejected the request (see stderr)`）。
+
+表示言語は`OPENTERNARY_LANG=en|ja`、未指定ならOSのロケールで決まる。日本語を表示できない文字コード（cp1252など）では英語になる。helpのコマンド説明とパネル名、表とエラーの見出しが対象で、`--json`の内容は言語に依存しない。
+
 ## JSON・終了コード
 
 各末端コマンドで`--json`、`--quiet`、`--events-jsonl NEW_FILE`を使用できる。JSONはstdoutに1文書、通常表示はstderrへ移す。`--quiet`も結果・エラーは保持する。`--dry-run`とeventsファイル出力の併用は副作用を避けるため拒否する。
@@ -230,6 +238,8 @@ run作成後の失敗はmetricsへ理由を残す。初期metadata作成途中�
 | 空compareの成功 | 入力エラー、作成済みrunに失敗を記録 |
 | schemaなしqualityの合格判定 | 観測結果のみ、accepted=false |
 | `cache-info` | 維持。管理artifact操作は`cache list/remove`へ分離 |
+| `doctor`等の通常表示がJSON | 表で表示。機械処理は`--json` |
+| エラーが2回表示される | 1回のパネル表示に統一 |
 
 ## Python API・plugin
 

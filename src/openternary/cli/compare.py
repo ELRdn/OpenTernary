@@ -5,11 +5,12 @@ from typing import Annotated
 
 import typer
 
-from openternary.cli.common import _resolve_cli_overrides, _write_failed_metrics, app, console
+from openternary.cli.common import _resolve_cli_overrides, _write_failed_metrics, app, console, explain
 from openternary.cli.protocol import Command
+from openternary.ui.i18n import t
 
 
-@app.command("compare", cls=Command)
+@app.command("compare", cls=Command, help=t("help.compare"), rich_help_panel=t("panel.evaluate"))
 def compare(
     baseline: Annotated[str | None, typer.Argument(help="Baseline run directory")] = None,
     quantized: Annotated[str | None, typer.Argument(help="Quantized run directory")] = None,
@@ -37,10 +38,10 @@ def compare(
     try:
         cfg = load_config(config_path=config, cli_overrides=overrides)
     except FileNotFoundError as e:
-        console.print(f"[red]Config file not found:[/red] {e}")
+        explain("Config file not found")
         raise typer.Exit(2) from e
     except ValueError as e:
-        console.print(f"[red]Configuration error:[/red] {e}")
+        explain("Configuration error")
         raise typer.Exit(2) from e
 
     if dry_run:
@@ -50,7 +51,7 @@ def compare(
         raise typer.Exit(0)
 
     if baseline is None or quantized is None:
-        console.print("[red]compare requires two run directories: baseline and quantized[/red]")
+        explain("compare requires two run directories: baseline and quantized")
         console.print("[dim]Usage: openternary compare <baseline_dir> <quantized_dir>[/dim]")
         raise typer.Exit(2)
 
@@ -69,7 +70,7 @@ def compare(
         publish(quality_acceptance=multiple["quality_acceptance"], comparison=multiple)
     except (ValueError, OSError) as exc:
         _write_failed_metrics(run_dir, run_id, type(exc).__name__, str(exc))
-        console.print(f"[red]Compare failed:[/red] {exc}")
+        explain("Compare failed")
         raise typer.Exit(2) from exc
     write_json(run_dir / "compare.json", result)
     if isinstance(result.get("quality_gate"), dict):
