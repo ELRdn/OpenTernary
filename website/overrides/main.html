@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+
+{% block announce %}
+  {% if i18n_page_locale == "ja" %}
+    OpenTernaryは研究段階のアルファ版です。量子化したモデルで品質の受入条件を満たしたものはまだありません。
+    <a href="{{ 'ja/project/status/' | url }}">現在の状況</a>
+  {% else %}
+    OpenTernary is research-stage alpha software. No quantized model has passed its quality gate yet.
+    <a href="{{ 'project/status/' | url }}">Current status</a>
+  {% endif %}
+{% endblock %}

@@ -8,10 +8,12 @@ Section 6). This file explains how they may be used.
 
 - The name **OpenTernary** and the `OPEN-TERNARY` wordmark.
 - The OpenTernary symbol (the three-tomoe mark) in any form, including the files in
-  `docs/brand/` and the terminal rendering baked into `src/openternary/ui/assets/`.
+  `docs/brand/`, the terminal rendering baked into `src/openternary/ui/assets/`, and the
+  copies used by the documentation site (`website/content/assets/logo.svg`,
+  `website/content/assets/favicon.png`).
 
-The files in `docs/brand/` and `src/openternary/ui/assets/` are **not** covered by the
-Apache License. All rights are reserved, except as allowed below.
+The files in `docs/brand/`, `src/openternary/ui/assets/` and those two site assets are
+**not** covered by the Apache License. All rights are reserved, except as allowed below.
 
 ## Allowed without asking
 

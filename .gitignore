@@ -76,3 +76,5 @@ logs/
 pytest-cache-files-*/
 test_cli_*/
 test_run_*/
+# mkdocs build output
+/site/

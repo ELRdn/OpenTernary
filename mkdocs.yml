@@ -1,0 +1,192 @@
+# OpenTernary documentation site — https://elrdn.github.io/OpenTernary/
+#
+#   uv sync --group docs
+#   uv run --frozen mkdocs serve          # http://127.0.0.1:8000
+#   uv run --frozen mkdocs build --strict # what CI publishes
+#
+# Pages live in website/content/en and website/content/ja with the same file names. `docs/` keeps the
+# internal design and evidence records; the site links to them on GitHub instead of copying them.
+
+site_name: OpenTernary
+site_url: https://elrdn.github.io/OpenTernary/
+site_description: Open-source tooling for researching, calibrating, benchmarking and exporting ternary LLMs.
+site_author: The OpenTernary Authors
+copyright: Copyright &copy; 2026 The OpenTernary Authors &middot; Code under Apache-2.0 &middot; The OpenTernary name and logo are trademarks, not licensed
+repo_url: https://github.com/ELRdn/OpenTernary
+repo_name: ELRdn/OpenTernary
+edit_uri: edit/main/website/content/
+
+docs_dir: website/content
+hooks:
+  - website/hooks/cjk_linebreaks.py
+site_dir: site
+strict: true
+
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn
+
+theme:
+  name: material
+  custom_dir: website/overrides
+  logo: assets/logo.svg
+  favicon: assets/favicon.png
+  icon:
+    repo: fontawesome/brands/github
+  font: false # system fonts: no request to Google Fonts, and Japanese renders with the OS font
+  palette:
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+  features:
+    - announce.dismiss
+    - content.code.annotate
+    - content.code.copy
+    - content.tabs.link
+    - content.action.edit
+    - navigation.footer
+    - navigation.indexes
+    - navigation.sections
+    - navigation.tabs
+    - navigation.top
+    - navigation.tracking
+    - search.highlight
+    - search.share
+    - search.suggest
+    - toc.follow
+
+extra_css:
+  - assets/stylesheets/extra.css
+
+extra_javascript:
+  - assets/javascripts/mathjax.js
+  - https://cdn.jsdelivr.net/npm/mathjax@3.2.2/es5/tex-mml-chtml.js
+
+extra:
+  generator: false
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/ELRdn/OpenTernary
+      name: Source on GitHub
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/openternary/
+      name: openternary on PyPI
+
+plugins:
+  - search:
+      separator: '[\s​\-_,:!=\[\]()"`/]+|\.(?!\d)|&[lg]t;|(?!\b)(?=[A-Z][a-z])'
+  - i18n:
+      docs_structure: folder
+      fallback_to_default: true  # safe: tests/test_docs.py requires the same pages in every language
+      reconfigure_material: true
+      reconfigure_search: true
+      languages:
+        - locale: en
+          name: English
+          default: true
+          build: true
+        - locale: ja
+          name: 日本語
+          build: true
+          site_description: 三値LLMの研究・校正・評価・書き出しのためのオープンソースツール。
+          copyright: Copyright &copy; 2026 The OpenTernary Authors &middot; コードはApache-2.0 &middot; OpenTernaryの名称とロゴは商標で、ライセンスの対象外
+          nav_translations:
+            Home: ホーム
+            Getting started: はじめに
+            Concepts: 考え方
+            Guides: ガイド
+            Reference: リファレンス
+            Project: プロジェクト
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      permalink_title: Link to this section
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.betterem
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.snippets:
+      base_path: [website/snippets]
+      check_paths: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - getting-started/index.md
+      - getting-started/installation.md
+      - getting-started/first-run.md
+      - getting-started/tui.md
+  - Concepts:
+      - concepts/index.md
+      - concepts/ternary-quantization.md
+      - concepts/runs-and-evidence.md
+      - concepts/calibration.md
+      - concepts/architecture.md
+  - Guides:
+      - guides/index.md
+      - guides/inspect-and-plan.md
+      - guides/quantize.md
+      - guides/calibrate.md
+      - guides/evaluate-and-compare.md
+      - guides/export.md
+      - guides/diffusion.md
+      - guides/optimize.md
+      - guides/artifacts.md
+      - guides/automation.md
+      - guides/troubleshooting.md
+  - Reference:
+      - reference/index.md
+      - reference/cli.md
+      - reference/configuration.md
+      - reference/output.md
+      - reference/run-directory.md
+      - reference/environment-variables.md
+      - reference/python-api.md
+      - reference/plugins.md
+  - Project:
+      - project/index.md
+      - project/status.md
+      - project/roadmap.md
+      - project/changelog.md
+      - project/contributing.md
+      - project/license.md
+      - project/faq.md

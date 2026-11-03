@@ -2,6 +2,8 @@
 
 > Open-source tooling for researching, calibrating, benchmarking, and eventually deploying ternary LLMs.
 
+**Documentation: [elrdn.github.io/OpenTernary](https://elrdn.github.io/OpenTernary/)** (English / [日本語](https://elrdn.github.io/OpenTernary/ja/)): installation, a 5-minute offline tutorial, concepts, guides and the complete CLI reference.
+
 **OpenTernary** is an experimental CLI-first project for exploring how existing open-weight language models can be converted toward ternary weights such as `{-1, 0, +1}` while retaining as much model quality as possible.
 
 The project begins with **Gemma 4 E2B** as the first research target and focuses on building a reproducible quantization pipeline before attempting a GUI or large-model scaling.
