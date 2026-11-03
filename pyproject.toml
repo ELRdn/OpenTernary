@@ -4,7 +4,8 @@ version = "0.1.0a0"
 description = "Open-source tooling for researching ternary LLMs (Gemma 4 E2B first target)"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "TBD" }
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE", "TRADEMARKS.md"]
 authors = [{ name = "OpenTernary" }]
 keywords = ["llm", "quantization", "ternary", "gemma"]
 dependencies = [
@@ -61,6 +62,7 @@ only-include = [
     "src/openternary", "tests", "configs", "docs", "scripts", ".github",
     "pyproject.toml", "uv.lock", "README.md", "CLI_ROADMAP.md", "ROADMAP.md",
     "PROJECT_SPEC.md", "ARCHITECTURE.md", "BENCHMARKS.md", "RESEARCH_PLAN.md",
+    "LICENSE", "NOTICE", "TRADEMARKS.md",
 ]
 exclude = ["**/__pycache__", "**/*.pyc", "**/*.safetensors", "**/*.pt", "**/*.ckpt", "**/*.bin"]
 

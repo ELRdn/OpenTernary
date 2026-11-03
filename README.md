@@ -365,6 +365,10 @@ Current focus:
 
 ## License
 
-License is **TBD before public release**.
+The source code is licensed under the [Apache License 2.0](LICENSE). Copyright 2026 The OpenTernary Authors.
+
+- Forks and other redistributions must keep the [NOTICE](NOTICE) file, which names this project as the origin (Apache-2.0, Section 4(d)), and mark files they changed (Section 4(b)).
+- The OpenTernary name and logo are **not** licensed under Apache-2.0: see [TRADEMARKS.md](TRADEMARKS.md). Public forks should use their own name and logo.
+- Contributions are accepted under the same license (Apache-2.0, Section 5).
 
 The project must not copy code from external implementations until their licenses and attribution requirements have been checked.

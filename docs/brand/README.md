@@ -42,3 +42,7 @@ PNG は Inkscape 等の SVG レンダラーから書き出す。
 これは OpenTernary 向けに新規に構成した図形だが、既存のロゴとの類似性・商標登録可能性は別途確認が必要。元の Adobe Stock 画像はトレースしていない。
 
 16px では色と内部の余白がかなり小さくなるため、超小サイズ専用バリアントが必要かは実環境で判断する。
+
+## ライセンス
+
+この `docs/brand/` のファイル（SVG・PNG・生成スクリプト）と、端末用に変換した `src/openternary/ui/assets/` は、Apache License 2.0 の対象外です。名前とロゴの使い方は、リポジトリ直下の [TRADEMARKS.md](../../TRADEMARKS.md) を参照してください。
